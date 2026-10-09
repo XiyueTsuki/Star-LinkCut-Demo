@@ -1,0 +1,5 @@
+$kind: http-request
+name: 访问短链
+url: http://localhost:8080/SMlHcsKWBM
+method: GET
+order: 1714589531871865

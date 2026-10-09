@@ -1,0 +1,13 @@
+$kind: http-request
+url: http://localhost:8080/api/link/create
+method: POST
+body:
+  type: json
+  content: "{\r
+
+    \    \"originUrl\": \"https://www.baidu.com\",\r
+
+    \    \"expireSeconds\": \"86400\"\r
+
+    }"
+order: 1791554457974

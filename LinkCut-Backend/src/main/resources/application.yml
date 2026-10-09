@@ -1,0 +1,103 @@
+# ==================== Docker 容器宿主机地址（修改为虚拟机IP） ====================
+app:
+  host: 192.168.100.128
+
+server:
+  port: 8080
+
+spring:
+  application:
+    name: LinkCut-Backend
+
+  # ==================== MySQL 8.4 配置 ====================
+  datasource:
+    url: jdbc:mysql://${app.host}:3306/linkcut?useUnicode=true&characterEncoding=UTF-8&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true
+    username: linkcut
+    password: linkcut123
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    hikari:
+      minimum-idle: 10
+      maximum-pool-size: 50
+      idle-timeout: 300000
+      max-lifetime: 600000
+      connection-timeout: 3000
+      connection-test-query: SELECT 1
+
+  # ==================== Redis 8.2 配置 (Redisson 3.43) ====================
+  data:
+    redis:
+      host: ${app.host}
+      port: 6379
+      password: redis123
+      timeout: 3000ms
+      lettuce:
+        pool:
+          max-active: 64
+          max-idle: 32
+          min-idle: 8
+          max-wait: 3000ms
+
+# ==================== MyBatis-Plus 配置 ====================
+mybatis-plus:
+  configuration:
+    map-underscore-to-camel-case: true
+    log-impl: org.apache.ibatis.logging.stdout.StdOutImpl
+  global-config:
+    db-config:
+      id-type: assign_id
+      logic-delete-field: status
+      logic-delete-value: 0
+      logic-not-delete-value: 1
+  mapper-locations: classpath*:/mapper/**/*.xml
+
+# ==================== Redisson 3.43 独立配置 ====================
+redisson:
+  single-server-config:
+    address: redis://${app.host}:6379
+    password: redis123
+    connection-pool-size: 64
+    connection-minimum-idle-size: 16
+    idle-connection-timeout: 30000
+    timeout: 10000
+    retry-attempts: 1
+    retry-interval: 1500
+    subscription-connection-pool-size: 16
+    subscription-connection-minimum-idle-size: 1
+
+# ==================== RocketMQ 配置 ====================
+rocketmq:
+  name-server: ${app.host}:9876
+  producer:
+    group: linkcut-producer-group
+    send-message-timeout: 3000
+    retry-times-when-send-failed: 3
+    max-message-size: 4096
+  consumer:
+    group: linkcut-consumer-group
+    access-log:
+      topic: linkcut_access_log
+      tag: access
+
+# ==================== Snowflake 配置 ====================
+linkcut:
+  snowflake:
+    worker-id: 1
+    datacenter-id: 1
+  bloom-filter:
+    expected-insertions: 10000000
+    false-probability: 0.001
+    name: linkcut_bloom_filter
+  # ==================== 短链域名配置 ====================
+  domain: http://${app.host}:8080
+  # ==================== 限流配置 ====================
+  rate-limit:
+    create-api-qps: 1000
+    create-api-ip-qps: 10
+    redirect-api-qps: 10000
+    redirect-api-ip-qps: 100
+
+# ==================== 日志 ====================
+logging:
+  level:
+    com.xiyuetsuki.linkcutbackend: DEBUG
+    org.apache.rocketmq: WARN
