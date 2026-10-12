@@ -3,9 +3,12 @@ package com.xiyuetsuki.linkcutbackend.service.impl;
 import com.xiyuetsuki.linkcutbackend.cache.LinkCacheManager;
 import com.xiyuetsuki.linkcutbackend.dto.CreateLinkRequest;
 import com.xiyuetsuki.linkcutbackend.dto.CreateLinkResponse;
+import com.xiyuetsuki.linkcutbackend.dto.LinkInfoResponse;
+import com.xiyuetsuki.linkcutbackend.dto.LinkStatsResponse;
 import com.xiyuetsuki.linkcutbackend.entity.ShortCodeSnapshot;
 import com.xiyuetsuki.linkcutbackend.entity.ShortLink;
 import com.xiyuetsuki.linkcutbackend.generator.ShortCodeGenerator;
+import com.xiyuetsuki.linkcutbackend.repository.AccessLogRepository;
 import com.xiyuetsuki.linkcutbackend.repository.ShortCodeSnapshotRepository;
 import com.xiyuetsuki.linkcutbackend.repository.ShortLinkRepository;
 import com.xiyuetsuki.linkcutbackend.service.LinkCutService;
@@ -37,15 +40,18 @@ public class LinkCutServiceImpl implements LinkCutService {
     private final ShortCodeGenerator shortCodeGenerator;
     private final ShortLinkRepository shortLinkRepository;
     private final ShortCodeSnapshotRepository shortCodeSnapshotRepository;
+    private final AccessLogRepository accessLogRepository;
     private final LinkCacheManager linkCacheManager;
 
     public LinkCutServiceImpl(ShortCodeGenerator shortCodeGenerator,
                               ShortLinkRepository shortLinkRepository,
                               ShortCodeSnapshotRepository shortCodeSnapshotRepository,
+                              AccessLogRepository accessLogRepository,
                               LinkCacheManager linkCacheManager) {
         this.shortCodeGenerator = shortCodeGenerator;
         this.shortLinkRepository = shortLinkRepository;
         this.shortCodeSnapshotRepository = shortCodeSnapshotRepository;
+        this.accessLogRepository = accessLogRepository;
         this.linkCacheManager = linkCacheManager;
     }
 
@@ -89,18 +95,18 @@ public class LinkCutServiceImpl implements LinkCutService {
 
     @Override
     public String getOriginUrl(String shortCode) {
+        String originUrl = linkCacheManager.getOriginUrl(shortCode);
+        if (originUrl != null) {
+            log.debug("Cache hit (L1/L2): shortCode={}", shortCode);
+            return originUrl;
+        }
+
         if (!linkCacheManager.mightContain(shortCode)) {
             log.debug("BloomFilter miss: shortCode={}", shortCode);
             return null;
         }
 
-        String originUrl = linkCacheManager.getOriginUrl(shortCode);
-        if (originUrl != null) {
-            log.debug("Redis cache hit: shortCode={}", shortCode);
-            return originUrl;
-        }
-
-        log.debug("Redis cache miss, query DB with distributed lock: shortCode={}", shortCode);
+        log.debug("Cache miss, query DB with distributed lock: shortCode={}", shortCode);
         if (!linkCacheManager.tryLock(shortCode)) {
             log.warn("Failed to acquire distributed lock: shortCode={}", shortCode);
             originUrl = linkCacheManager.getOriginUrl(shortCode);
@@ -162,5 +168,56 @@ public class LinkCutServiceImpl implements LinkCutService {
         }
         long seconds = java.time.Duration.between(LocalDateTime.now(), expireTime).getSeconds();
         return Math.max(seconds, 60);
+    }
+
+    @Override
+    public LinkInfoResponse getLinkInfo(String shortCode) {
+        if (!linkCacheManager.mightContain(shortCode)) {
+            return null;
+        }
+        ShortLink shortLink = shortLinkRepository.findByShortCode(shortCode);
+        if (shortLink == null) {
+            return null;
+        }
+        return LinkInfoResponse.builder()
+                .shortCode(shortLink.getShortCode())
+                .shortUrl(domain + "/" + shortLink.getShortCode())
+                .originUrl(shortLink.getOriginUrl())
+                .createTime(shortLink.getCreateTime())
+                .expireTime(shortLink.getExpireTime())
+                .accessCount(shortLink.getAccessCount())
+                .status(shortLink.getStatus())
+                .build();
+    }
+
+    @Override
+    public LinkStatsResponse getLinkStats(String shortCode) {
+        if (!linkCacheManager.mightContain(shortCode)) {
+            return null;
+        }
+
+        LocalDateTime now = LocalDateTime.now();
+        LocalDateTime todayStart = now.toLocalDate().atStartOfDay();
+        LocalDateTime weekStart = now.minusDays(7);
+
+        Long totalPV = accessLogRepository.countTotalByShortCode(shortCode);
+        Long todayPV = accessLogRepository.countByShortCodeSince(shortCode, todayStart);
+        Long weekPV = accessLogRepository.countByShortCodeSince(shortCode, weekStart);
+
+        java.util.List<LinkStatsResponse.RefererItem> topReferers =
+                accessLogRepository.topReferers(shortCode, 10).stream()
+                        .map(row -> LinkStatsResponse.RefererItem.builder()
+                                .referer((String) row.get("referer"))
+                                .count(((Number) row.get("cnt")).longValue())
+                                .build())
+                        .toList();
+
+        return LinkStatsResponse.builder()
+                .shortCode(shortCode)
+                .totalPV(totalPV)
+                .todayPV(todayPV)
+                .weekPV(weekPV)
+                .topReferers(topReferers)
+                .build();
     }
 }
