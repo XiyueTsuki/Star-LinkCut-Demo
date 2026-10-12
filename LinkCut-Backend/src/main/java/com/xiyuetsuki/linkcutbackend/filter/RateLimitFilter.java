@@ -52,6 +52,13 @@ public class RateLimitFilter implements Filter {
         String path = httpRequest.getRequestURI();
         String clientIp = getClientIp(httpRequest);
 
+        if (path.startsWith("/docs.html") || path.startsWith("/v3/api-docs")
+                || path.startsWith("/swagger-ui") || path.startsWith("/swagger-resources")
+                || path.startsWith("/webjars") || path.startsWith("/favicon.ico")) {
+            chain.doFilter(request, response);
+            return;
+        }
+
         if (path.equals("/api/link/create") && "POST".equalsIgnoreCase(httpRequest.getMethod())) {
             if (!createGlobalLimiter.tryAcquire()) {
                 log.warn("Global rate limit exceeded for create API: ip={}", clientIp);
