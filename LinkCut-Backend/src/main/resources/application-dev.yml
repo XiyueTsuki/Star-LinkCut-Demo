@@ -1,0 +1,13 @@
+# ==================== dev 环境限流配置 ====================
+linkcut:
+  rate-limit:
+    create-api-qps: 1000
+    create-api-ip-qps: 10
+    redirect-api-qps: 10000
+    redirect-api-ip-qps: 100
+
+# ==================== dev 环境日志 ====================
+logging:
+  level:
+    com.xiyuetsuki.linkcutbackend: DEBUG
+    org.apache.rocketmq: WARN

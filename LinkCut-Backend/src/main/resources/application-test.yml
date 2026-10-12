@@ -1,0 +1,13 @@
+# ==================== test 环境限流配置（压测用，≈ 关闭限流） ====================
+linkcut:
+  rate-limit:
+    create-api-qps: 100000
+    create-api-ip-qps: 100000
+    redirect-api-qps: 100000
+    redirect-api-ip-qps: 100000
+
+# ==================== test 环境日志（减少 IO 开销） ====================
+logging:
+  level:
+    com.xiyuetsuki.linkcutbackend: WARN
+    org.apache.rocketmq: WARN

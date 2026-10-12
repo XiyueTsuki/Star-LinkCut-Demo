@@ -6,6 +6,8 @@ server:
   port: 8080
 
 spring:
+  profiles:
+    active: dev
   application:
     name: LinkCut-Backend
 
@@ -89,15 +91,15 @@ linkcut:
     name: linkcut_bloom_filter
   # ==================== 短链域名配置 ====================
   domain: http://${app.host}:8080
-  # ==================== 限流配置 ====================
-  rate-limit:
-    create-api-qps: 1000
-    create-api-ip-qps: 10
-    redirect-api-qps: 10000
-    redirect-api-ip-qps: 100
+  # ==================== Caffeine 本地缓存配置 (L1) ====================
+  caffeine:
+    max-size: 10000
+    expire-minutes: 5
 
-# ==================== 日志 ====================
-logging:
-  level:
-    com.xiyuetsuki.linkcutbackend: DEBUG
-    org.apache.rocketmq: WARN
+# ==================== SpringDoc OpenAPI 配置 ====================
+springdoc:
+  swagger-ui:
+    path: /docs.html
+  api-docs:
+    path: /v3/api-docs
+  paths-to-match: /api/**,/{shortCode}
