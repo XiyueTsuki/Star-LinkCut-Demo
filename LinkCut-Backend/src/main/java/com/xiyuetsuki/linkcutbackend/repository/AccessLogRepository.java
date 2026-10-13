@@ -2,6 +2,7 @@ package com.xiyuetsuki.linkcutbackend.repository;
 
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import com.xiyuetsuki.linkcutbackend.entity.AccessLog;
+import org.apache.ibatis.annotations.Insert;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
@@ -26,4 +27,16 @@ public interface AccessLogRepository extends BaseMapper<AccessLog> {
             "WHERE short_code = #{shortCode} AND referer IS NOT NULL AND referer != '' " +
             "GROUP BY referer ORDER BY cnt DESC LIMIT #{limit}")
     List<Map<String, Object>> topReferers(@Param("shortCode") String shortCode, @Param("limit") int limit);
+
+    @Insert("INSERT IGNORE INTO t_access_log (short_code, access_ip, user_agent, referer, access_time, message_key) " +
+            "VALUES (#{shortCode}, #{accessIp}, #{userAgent}, #{referer}, #{accessTime}, #{messageKey})")
+    int insertIgnore(AccessLog accessLog);
+
+    @Insert("<script>" +
+            "INSERT IGNORE INTO t_access_log (short_code, access_ip, user_agent, referer, access_time, message_key) VALUES " +
+            "<foreach collection='list' item='item' separator=','>" +
+            "(#{item.shortCode}, #{item.accessIp}, #{item.userAgent}, #{item.referer}, #{item.accessTime}, #{item.messageKey})" +
+            "</foreach>" +
+            "</script>")
+    int insertIgnoreBatch(List<AccessLog> list);
 }

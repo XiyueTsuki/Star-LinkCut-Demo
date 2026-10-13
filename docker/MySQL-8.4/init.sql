@@ -37,6 +37,8 @@ CREATE TABLE IF NOT EXISTS t_access_log (
     user_agent    VARCHAR(500)                          COMMENT '浏览器UA',
     referer       VARCHAR(500)                          COMMENT '来源URL',
     access_time   DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '访问时间',
+    message_key   VARCHAR(64)                           COMMENT 'RocketMQ 消息唯一键(幂等去重)',
+    UNIQUE KEY uk_message_key (message_key),
     INDEX idx_short_code_time (short_code, access_time),
     INDEX idx_access_time (access_time)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='访问日志表';

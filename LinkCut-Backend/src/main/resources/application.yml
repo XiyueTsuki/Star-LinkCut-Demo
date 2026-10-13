@@ -66,19 +66,29 @@ redisson:
     subscription-connection-pool-size: 16
     subscription-connection-minimum-idle-size: 1
 
-# ==================== RocketMQ 配置 ====================
+# ==================== RocketMQ 配置 (原生客户端) ====================
 rocketmq:
   name-server: ${app.host}:9876
   producer:
     group: linkcut-producer-group
-    send-message-timeout: 3000
-    retry-times-when-send-failed: 3
-    max-message-size: 4096
+    send-msg-timeout: 3000
+    retry-times: 3
   consumer:
     group: linkcut-consumer-group
-    access-log:
-      topic: linkcut_access_log
-      tag: access
+    thread-max: 20
+    batch-max-size: 32
+    max-reconsume-times: 3
+  access-log:
+    topic: linkcut_access_log
+    tag: access
+  fallback:
+    queue-key: linkcut:mq:fallback:access_log
+    dlq-key: linkcut:mq:dlq:access_log
+    max-queue-size: 5000
+    max-retries: 3
+    retry-interval-ms: 30000
+    backlog-warn-threshold: 0.8
+    monitor-interval-ms: 60000
 
 # ==================== Snowflake 配置 ====================
 linkcut:
@@ -90,7 +100,7 @@ linkcut:
     false-probability: 0.001
     name: linkcut_bloom_filter
     rebuild-cron: 0 0 3 * * ?
-  # ==================== 短链域名配置 ====================
+  # ==================== 短链域名配置（用户可见地址，dev 环境覆写为 localhost） ====================
   domain: http://${app.host}:8080
   # ==================== Caffeine 本地缓存配置 (L1) ====================
   caffeine:

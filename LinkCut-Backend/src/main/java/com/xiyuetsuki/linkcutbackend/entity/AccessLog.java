@@ -32,4 +32,6 @@ public class AccessLog {
     private String referer;
 
     private LocalDateTime accessTime;
+
+    private String messageKey;
 }

@@ -1,29 +1,99 @@
 package com.xiyuetsuki.linkcutbackend.config;
 
-import org.apache.rocketmq.spring.autoconfigure.RocketMQAutoConfiguration;
-import org.springframework.boot.autoconfigure.ImportAutoConfiguration;
-import org.springframework.context.annotation.Bean;
-import org.springframework.context.annotation.Configuration;
-
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import com.fasterxml.jackson.databind.SerializationFeature;
+import com.xiyuetsuki.linkcutbackend.mq.consumer.AccessLogConsumer;
+import lombok.extern.slf4j.Slf4j;
+import org.apache.rocketmq.client.consumer.DefaultMQPushConsumer;
+import org.apache.rocketmq.client.consumer.listener.ConsumeConcurrentlyStatus;
+import org.apache.rocketmq.client.consumer.listener.MessageListenerConcurrently;
+import org.apache.rocketmq.client.exception.MQClientException;
+import org.apache.rocketmq.client.producer.DefaultMQProducer;
+import org.apache.rocketmq.common.consumer.ConsumeFromWhere;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
 
 /**
- * RocketMQ 配置补充
+ * RocketMQ 原生客户端配置
+ * <p>
+ * 不再依赖 rocketmq-spring-boot-starter，直接使用原生 {@link DefaultMQProducer}
+ * 和 {@link DefaultMQPushConsumer}，通过 @Bean 管理生命周期。
+ * <p>
+ * Consumer 使用批量消费模式：一次拉取 batchMaxSize 条消息，
+ * 通过 {@link AccessLogConsumer} 批量解析并 INSERT IGNORE 写入 MySQL。
  */
+@Slf4j
 @Configuration
-@ImportAutoConfiguration(RocketMQAutoConfiguration.class)
 public class RocketMQConfig {
 
-    /**
-     * 配置 ObjectMapper 支持 Java 8 时间序列化
-     */
+    @Value("${rocketmq.name-server}")
+    private String nameServer;
+
+    @Value("${rocketmq.producer.group}")
+    private String producerGroup;
+
+    @Value("${rocketmq.producer.send-msg-timeout}")
+    private int sendMsgTimeout;
+
+    @Value("${rocketmq.producer.retry-times}")
+    private int retryTimes;
+
+    @Value("${rocketmq.consumer.group}")
+    private String consumerGroup;
+
+    @Value("${rocketmq.consumer.thread-max}")
+    private int consumeThreadMax;
+
+    @Value("${rocketmq.consumer.batch-max-size}")
+    private int batchMaxSize;
+
+    @Value("${rocketmq.consumer.max-reconsume-times}")
+    private int maxReconsumeTimes;
+
+    @Value("${rocketmq.access-log.topic}")
+    private String topic;
+
+    @Value("${rocketmq.access-log.tag}")
+    private String tag;
+
     @Bean
     public ObjectMapper objectMapper() {
         ObjectMapper mapper = new ObjectMapper();
         mapper.registerModule(new JavaTimeModule());
         mapper.disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
         return mapper;
+    }
+
+    @Bean(initMethod = "start", destroyMethod = "shutdown")
+    public DefaultMQProducer defaultMQProducer() throws MQClientException {
+        DefaultMQProducer producer = new DefaultMQProducer(producerGroup);
+        producer.setNamesrvAddr(nameServer);
+        producer.setSendMsgTimeout(sendMsgTimeout);
+        producer.setRetryTimesWhenSendFailed(retryTimes);
+        producer.setRetryTimesWhenSendAsyncFailed(retryTimes);
+        log.info("RocketMQ Producer started: group={}, nameServer={}", producerGroup, nameServer);
+        return producer;
+    }
+
+    @Bean(initMethod = "start", destroyMethod = "shutdown")
+    public DefaultMQPushConsumer defaultMQPushConsumer(AccessLogConsumer accessLogConsumer) throws MQClientException {
+        DefaultMQPushConsumer consumer = new DefaultMQPushConsumer(consumerGroup);
+        consumer.setNamesrvAddr(nameServer);
+        consumer.setConsumeFromWhere(ConsumeFromWhere.CONSUME_FROM_LAST_OFFSET);
+        consumer.setConsumeThreadMax(consumeThreadMax);
+        consumer.setConsumeMessageBatchMaxSize(batchMaxSize);
+        consumer.setMaxReconsumeTimes(maxReconsumeTimes);
+        consumer.subscribe(topic, tag);
+
+        consumer.registerMessageListener((MessageListenerConcurrently) (msgs, context) -> {
+            accessLogConsumer.handleBatch(msgs);
+            return ConsumeConcurrentlyStatus.CONSUME_SUCCESS;
+        });
+
+        log.info("RocketMQ Consumer started: group={}, batchMaxSize={}, threadMax={}",
+                consumerGroup, batchMaxSize, consumeThreadMax);
+        return consumer;
     }
 }

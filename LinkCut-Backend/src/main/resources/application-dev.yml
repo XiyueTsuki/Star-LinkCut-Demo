@@ -1,5 +1,6 @@
 # ==================== dev 环境限流配置 ====================
 linkcut:
+  domain: http://localhost:8080
   rate-limit:
     create-api-qps: 1000
     create-api-ip-qps: 10
