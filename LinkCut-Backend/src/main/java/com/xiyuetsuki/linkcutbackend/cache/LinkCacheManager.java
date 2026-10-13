@@ -5,6 +5,7 @@ import com.github.benmanes.caffeine.cache.Caffeine;
 import org.redisson.api.RBloomFilter;
 import org.redisson.api.RBucket;
 import org.redisson.api.RLock;
+import org.redisson.api.RTopic;
 import org.redisson.api.RedissonClient;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -24,6 +25,10 @@ import java.util.concurrent.TimeUnit;
  * 此外还封装布隆过滤器和分布式锁。
  * <p>
  * 写操作同时写入 L1 和 L2；读操作按 L1 → L2 级联查询，L2 命中时自动回填 L1。
+ * <p>
+ * 多实例缓存一致性：通过 Redis Pub/Sub 广播失效通知。
+ * 任意实例删除/更新缓存时发布消息，所有实例（含自身）监听同一频道并失效本地 Caffeine，
+ * 保证毫秒级跨实例 L1 一致性。
  */
 @Component
 public class LinkCacheManager {
@@ -32,6 +37,7 @@ public class LinkCacheManager {
 
     private static final String CACHE_KEY_PREFIX = "linkcut:code:";
     private static final String LOCK_KEY_PREFIX = "linkcut:lock:";
+    private static final String INVALIDATE_TOPIC = "linkcut:cache:invalidate";
     private static final long DEFAULT_TTL_SECONDS = TimeUnit.DAYS.toSeconds(7);
     private static final long LOCK_WAIT_SECONDS = 3;
     private static final long LOCK_LEASE_SECONDS = 10;
@@ -51,6 +57,13 @@ public class LinkCacheManager {
                 .expireAfterWrite(expireMinutes, TimeUnit.MINUTES)
                 .recordStats()
                 .build();
+
+        RTopic topic = redissonClient.getTopic(INVALIDATE_TOPIC);
+        topic.addListener(String.class, (channel, shortCode) -> {
+            localCache.invalidate(shortCode);
+            log.debug("Remote cache invalidation received: shortCode={}", shortCode);
+        });
+
         log.info("Caffeine local cache initialized: maxSize={}, expireMinutes={}", maxSize, expireMinutes);
     }
 
@@ -148,6 +161,43 @@ public class LinkCacheManager {
      */
     public long getBloomFilterCount() {
         return bloomFilter.count();
+    }
+
+    /**
+     * 获取 Caffeine 本地缓存统计信息
+     */
+    public com.github.benmanes.caffeine.cache.stats.CacheStats getLocalCacheStats() {
+        return localCache.stats();
+    }
+
+    /**
+     * 获取 Caffeine 本地缓存当前估计条目数
+     */
+    public long getLocalCacheEstimatedSize() {
+        return localCache.estimatedSize();
+    }
+
+    /**
+     * 删除缓存（L1 Caffeine + L2 Redis），并通过 Redis Pub/Sub 广播通知所有实例。
+     * <p>
+     * 执行顺序：
+     * <ol>
+     *   <li>本地 Caffeine 失效（当前实例立即不可见）</li>
+     *   <li>Redis 删除（全集群 L2 立即不可见）</li>
+     *   <li>Pub/Sub 广播 → 所有其他实例收到消息后失效各自的 Caffeine</li>
+     * </ol>
+     * 布隆过滤器不可删除（数据结构限制），删除后 getOriginUrl() 会走 DB，
+     * 由 status=0 的 @TableLogic 过滤得到正确结果。
+     */
+    public void invalidate(String shortCode) {
+        localCache.invalidate(shortCode);
+        RBucket<String> bucket = redissonClient.getBucket(CACHE_KEY_PREFIX + shortCode);
+        bucket.delete();
+
+        RTopic topic = redissonClient.getTopic(INVALIDATE_TOPIC);
+        topic.publish(shortCode);
+
+        log.info("Cache invalidated and broadcast: shortCode={}", shortCode);
     }
 
     /**

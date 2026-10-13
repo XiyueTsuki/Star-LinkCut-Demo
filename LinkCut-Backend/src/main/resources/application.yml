@@ -89,6 +89,7 @@ linkcut:
     expected-insertions: 10000000
     false-probability: 0.001
     name: linkcut_bloom_filter
+    rebuild-cron: 0 0 3 * * ?
   # ==================== 短链域名配置 ====================
   domain: http://${app.host}:8080
   # ==================== Caffeine 本地缓存配置 (L1) ====================

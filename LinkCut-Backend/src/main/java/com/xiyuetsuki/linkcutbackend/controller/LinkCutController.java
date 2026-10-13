@@ -1,12 +1,17 @@
 package com.xiyuetsuki.linkcutbackend.controller;
 
+import com.xiyuetsuki.linkcutbackend.cache.LinkCacheManager;
 import com.xiyuetsuki.linkcutbackend.common.Result;
+import com.xiyuetsuki.linkcutbackend.dto.CacheStatsResponse;
 import com.xiyuetsuki.linkcutbackend.dto.CreateLinkRequest;
 import com.xiyuetsuki.linkcutbackend.dto.CreateLinkResponse;
+import com.xiyuetsuki.linkcutbackend.dto.ExpireExtendRequest;
+import com.xiyuetsuki.linkcutbackend.dto.ExpireExtendResponse;
 import com.xiyuetsuki.linkcutbackend.dto.LinkInfoResponse;
 import com.xiyuetsuki.linkcutbackend.dto.LinkStatsResponse;
 import com.xiyuetsuki.linkcutbackend.mq.producer.AccessLogProducer;
 import com.xiyuetsuki.linkcutbackend.service.LinkCutService;
+import com.github.benmanes.caffeine.cache.stats.CacheStats;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.responses.ApiResponse;
@@ -33,10 +38,14 @@ public class LinkCutController {
 
     private final LinkCutService linkCutService;
     private final AccessLogProducer accessLogProducer;
+    private final LinkCacheManager linkCacheManager;
 
-    public LinkCutController(LinkCutService linkCutService, AccessLogProducer accessLogProducer) {
+    public LinkCutController(LinkCutService linkCutService,
+                             AccessLogProducer accessLogProducer,
+                             LinkCacheManager linkCacheManager) {
         this.linkCutService = linkCutService;
         this.accessLogProducer = accessLogProducer;
+        this.linkCacheManager = linkCacheManager;
     }
 
     @Operation(summary = "创建短链", description = "传入原始URL，生成唯一的短链码并返回短链接")
@@ -106,6 +115,54 @@ public class LinkCutController {
             return Result.error(404, "短链不存在");
         }
         return Result.success(response);
+    }
+
+    @Operation(summary = "删除短链", description = "逻辑删除短链（status=0），同步失效 L1 Caffeine + L2 Redis 缓存")
+    @ApiResponses({
+            @ApiResponse(responseCode = "200", description = "删除成功"),
+            @ApiResponse(responseCode = "404", description = "短链不存在或已删除")
+    })
+    @DeleteMapping("/api/link/{shortCode}")
+    public Result<Void> deleteShortLink(
+            @Parameter(description = "短链码", required = true, example = "abc123")
+            @PathVariable String shortCode) {
+        boolean deleted = linkCutService.deleteShortLink(shortCode);
+        if (!deleted) {
+            return Result.error(404, "短链不存在或已删除");
+        }
+        return Result.success();
+    }
+
+    @Operation(summary = "延期过期时间", description = "在原有过期时间基础上增加指定秒数，同步刷新 Redis 缓存 TTL")
+    @ApiResponses({
+            @ApiResponse(responseCode = "200", description = "延期成功"),
+            @ApiResponse(responseCode = "404", description = "短链不存在")
+    })
+    @PutMapping("/api/link/{shortCode}/expire")
+    public Result<ExpireExtendResponse> extendExpireTime(
+            @Parameter(description = "短链码", required = true, example = "abc123")
+            @PathVariable String shortCode,
+            @Valid @RequestBody ExpireExtendRequest request) {
+        ExpireExtendResponse response = linkCutService.extendExpireTime(shortCode, request.getExtendSeconds());
+        if (response == null) {
+            return Result.error(404, "短链不存在");
+        }
+        return Result.success(response);
+    }
+
+    @Operation(summary = "缓存统计", description = "查看 Caffeine L1 命中率和布隆过滤器当前条目数")
+    @ApiResponse(responseCode = "200", description = "查询成功")
+    @GetMapping("/api/cache/stats")
+    public Result<CacheStatsResponse> getCacheStats() {
+        CacheStats stats = linkCacheManager.getLocalCacheStats();
+        return Result.success(CacheStatsResponse.builder()
+                .hitCount(stats.hitCount())
+                .missCount(stats.missCount())
+                .hitRate(stats.hitRate())
+                .evictionCount(stats.evictionCount())
+                .estimatedSize(linkCacheManager.getLocalCacheEstimatedSize())
+                .bloomFilterCount(linkCacheManager.getBloomFilterCount())
+                .build());
     }
 
     /**

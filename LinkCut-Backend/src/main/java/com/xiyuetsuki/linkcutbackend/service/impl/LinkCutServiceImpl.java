@@ -3,6 +3,7 @@ package com.xiyuetsuki.linkcutbackend.service.impl;
 import com.xiyuetsuki.linkcutbackend.cache.LinkCacheManager;
 import com.xiyuetsuki.linkcutbackend.dto.CreateLinkRequest;
 import com.xiyuetsuki.linkcutbackend.dto.CreateLinkResponse;
+import com.xiyuetsuki.linkcutbackend.dto.ExpireExtendResponse;
 import com.xiyuetsuki.linkcutbackend.dto.LinkInfoResponse;
 import com.xiyuetsuki.linkcutbackend.dto.LinkStatsResponse;
 import com.xiyuetsuki.linkcutbackend.entity.ShortCodeSnapshot;
@@ -218,6 +219,49 @@ public class LinkCutServiceImpl implements LinkCutService {
                 .todayPV(todayPV)
                 .weekPV(weekPV)
                 .topReferers(topReferers)
+                .build();
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public boolean deleteShortLink(String shortCode) {
+        ShortLink shortLink = shortLinkRepository.findByShortCode(shortCode);
+        if (shortLink == null) {
+            return false;
+        }
+
+        shortLinkRepository.deleteById(shortLink.getId());
+
+        linkCacheManager.invalidate(shortCode);
+
+        log.info("Short link deleted: shortCode={}", shortCode);
+        return true;
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public ExpireExtendResponse extendExpireTime(String shortCode, Long extendSeconds) {
+        ShortLink shortLink = shortLinkRepository.findByShortCode(shortCode);
+        if (shortLink == null) {
+            return null;
+        }
+
+        LocalDateTime baseTime = shortLink.getExpireTime();
+        if (baseTime == null || baseTime.isBefore(LocalDateTime.now())) {
+            baseTime = LocalDateTime.now();
+        }
+        LocalDateTime newExpireTime = baseTime.plusSeconds(extendSeconds);
+
+        shortLink.setExpireTime(newExpireTime);
+        shortLinkRepository.updateById(shortLink);
+
+        long ttlSeconds = calculateTtl(newExpireTime);
+        linkCacheManager.putShortLink(shortCode, shortLink.getOriginUrl(), ttlSeconds);
+
+        log.info("Expire time extended: shortCode={}, newExpireTime={}", shortCode, newExpireTime);
+        return ExpireExtendResponse.builder()
+                .shortCode(shortCode)
+                .newExpireTime(newExpireTime)
                 .build();
     }
 }

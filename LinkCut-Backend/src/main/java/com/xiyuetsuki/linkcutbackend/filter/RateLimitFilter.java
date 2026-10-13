@@ -1,5 +1,7 @@
 package com.xiyuetsuki.linkcutbackend.filter;
 
+import com.github.benmanes.caffeine.cache.Cache;
+import com.github.benmanes.caffeine.cache.Caffeine;
 import com.google.common.util.concurrent.RateLimiter;
 import jakarta.servlet.*;
 import jakarta.servlet.http.HttpServletRequest;
@@ -11,13 +13,13 @@ import org.springframework.core.annotation.Order;
 import org.springframework.stereotype.Component;
 
 import java.io.IOException;
-import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.TimeUnit;
 
 /**
  * Guava RateLimiter 限流过滤器
  * <p>
  * 对创建短链接口和重定向接口分别进行全局限流和IP限流。
+ * IP 级别限流器使用 Caffeine 缓存存储，过期自动淘汰，避免内存泄漏。
  */
 @Component
 @Order(1)
@@ -27,8 +29,8 @@ public class RateLimitFilter implements Filter {
 
     private final RateLimiter createGlobalLimiter;
     private final RateLimiter redirectGlobalLimiter;
-    private final Map<String, RateLimiter> createIpLimiters = new ConcurrentHashMap<>();
-    private final Map<String, RateLimiter> redirectIpLimiters = new ConcurrentHashMap<>();
+    private final Cache<String, RateLimiter> createIpLimiters;
+    private final Cache<String, RateLimiter> redirectIpLimiters;
 
     private final double createApiIpQps;
     private final double redirectApiIpQps;
@@ -42,6 +44,14 @@ public class RateLimitFilter implements Filter {
         this.redirectGlobalLimiter = RateLimiter.create(redirectApiQps);
         this.createApiIpQps = createApiIpQps;
         this.redirectApiIpQps = redirectApiIpQps;
+        this.createIpLimiters = Caffeine.newBuilder()
+                .expireAfterAccess(10, TimeUnit.MINUTES)
+                .maximumSize(10000)
+                .build();
+        this.redirectIpLimiters = Caffeine.newBuilder()
+                .expireAfterAccess(10, TimeUnit.MINUTES)
+                .maximumSize(50000)
+                .build();
     }
 
     @Override
@@ -68,7 +78,7 @@ public class RateLimitFilter implements Filter {
                 return;
             }
 
-            RateLimiter ipLimiter = createIpLimiters.computeIfAbsent(clientIp,
+            RateLimiter ipLimiter = createIpLimiters.get(clientIp,
                     k -> RateLimiter.create(createApiIpQps));
             if (!ipLimiter.tryAcquire()) {
                 log.warn("IP rate limit exceeded for create API: ip={}", clientIp);
@@ -88,7 +98,7 @@ public class RateLimitFilter implements Filter {
                 return;
             }
 
-            RateLimiter ipLimiter = redirectIpLimiters.computeIfAbsent(clientIp,
+            RateLimiter ipLimiter = redirectIpLimiters.get(clientIp,
                     k -> RateLimiter.create(redirectApiIpQps));
             if (!ipLimiter.tryAcquire()) {
                 log.warn("IP rate limit exceeded for redirect API: ip={}", clientIp);
