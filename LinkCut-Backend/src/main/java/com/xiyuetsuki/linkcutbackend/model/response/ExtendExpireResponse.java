@@ -1,4 +1,4 @@
-package com.xiyuetsuki.linkcutbackend.dto;
+package com.xiyuetsuki.linkcutbackend.model.response;
 
 import io.swagger.v3.oas.annotations.media.Schema;
 import lombok.AllArgsConstructor;
@@ -13,7 +13,7 @@ import java.time.LocalDateTime;
 @NoArgsConstructor
 @AllArgsConstructor
 @Schema(description = "过期时间延期响应")
-public class ExpireExtendResponse {
+public class ExtendExpireResponse {
 
     @Schema(description = "短链码", example = "abc123")
     private String shortCode;

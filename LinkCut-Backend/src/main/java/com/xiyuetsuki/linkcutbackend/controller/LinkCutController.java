@@ -1,16 +1,16 @@
 package com.xiyuetsuki.linkcutbackend.controller;
 
 import com.xiyuetsuki.linkcutbackend.cache.LinkCacheManager;
-import com.xiyuetsuki.linkcutbackend.common.Result;
-import com.xiyuetsuki.linkcutbackend.dto.CacheStatsResponse;
-import com.xiyuetsuki.linkcutbackend.dto.CreateLinkRequest;
-import com.xiyuetsuki.linkcutbackend.dto.CreateLinkResponse;
-import com.xiyuetsuki.linkcutbackend.dto.ExpireExtendRequest;
-import com.xiyuetsuki.linkcutbackend.dto.ExpireExtendResponse;
-import com.xiyuetsuki.linkcutbackend.dto.LinkInfoResponse;
-import com.xiyuetsuki.linkcutbackend.dto.LinkStatsResponse;
+import com.xiyuetsuki.linkcutbackend.common.CommonResponse;
+import com.xiyuetsuki.linkcutbackend.model.request.CreateLinkRequest;
+import com.xiyuetsuki.linkcutbackend.model.request.ExtendExpireRequest;
+import com.xiyuetsuki.linkcutbackend.model.response.CacheStatsResponse;
+import com.xiyuetsuki.linkcutbackend.model.response.CreateLinkResponse;
+import com.xiyuetsuki.linkcutbackend.model.response.ExtendExpireResponse;
+import com.xiyuetsuki.linkcutbackend.model.response.LinkAccessStatsResponse;
+import com.xiyuetsuki.linkcutbackend.model.response.LinkDetailResponse;
+import com.xiyuetsuki.linkcutbackend.mq.producer.AccessCountProducer;
 import com.xiyuetsuki.linkcutbackend.mq.producer.AccessLogProducer;
-import com.xiyuetsuki.linkcutbackend.mq.producer.IncrementProducer;
 import com.xiyuetsuki.linkcutbackend.service.LinkCutService;
 import com.github.benmanes.caffeine.cache.stats.CacheStats;
 import io.swagger.v3.oas.annotations.Operation;
@@ -39,16 +39,16 @@ public class LinkCutController {
 
     private final LinkCutService linkCutService;
     private final AccessLogProducer accessLogProducer;
-    private final IncrementProducer incrementProducer;
+    private final AccessCountProducer accessCountProducer;
     private final LinkCacheManager linkCacheManager;
 
     public LinkCutController(LinkCutService linkCutService,
                              AccessLogProducer accessLogProducer,
-                             IncrementProducer incrementProducer,
+                             AccessCountProducer accessCountProducer,
                              LinkCacheManager linkCacheManager) {
         this.linkCutService = linkCutService;
         this.accessLogProducer = accessLogProducer;
-        this.incrementProducer = incrementProducer;
+        this.accessCountProducer = accessCountProducer;
         this.linkCacheManager = linkCacheManager;
     }
 
@@ -58,11 +58,11 @@ public class LinkCutController {
             @ApiResponse(responseCode = "429", description = "请求被限流")
     })
     @PostMapping("/api/link/create")
-    public Result<CreateLinkResponse> createShortLink(@Valid @RequestBody CreateLinkRequest request,
+    public CommonResponse<CreateLinkResponse> createShortLink(@Valid @RequestBody CreateLinkRequest request,
                                                        HttpServletRequest httpRequest) {
         String creatorIp = getClientIp(httpRequest);
         CreateLinkResponse response = linkCutService.createShortLink(request, creatorIp);
-        return Result.success(response);
+        return CommonResponse.success(response);
     }
 
     @Operation(summary = "短链重定向", description = "访问短链码，302跳转到原始URL。若短链不存在或已过期则返回404")
@@ -86,7 +86,7 @@ public class LinkCutController {
         String userAgent = request.getHeader("User-Agent");
         String referer = request.getHeader("Referer");
         accessLogProducer.sendAccessLog(shortCode, clientIp, userAgent, referer);
-        incrementProducer.sendIncrement(shortCode);
+        accessCountProducer.sendIncrement(shortCode);
         response.sendRedirect(originUrl);
     }
 
@@ -96,14 +96,14 @@ public class LinkCutController {
             @ApiResponse(responseCode = "404", description = "短链不存在")
     })
     @GetMapping("/api/link/{shortCode}/info")
-    public Result<LinkInfoResponse> getLinkInfo(
+    public CommonResponse<LinkDetailResponse> getLinkInfo(
             @Parameter(description = "短链码", required = true, example = "abc123")
             @PathVariable String shortCode) {
-        LinkInfoResponse response = linkCutService.getLinkInfo(shortCode);
+        LinkDetailResponse response = linkCutService.getLinkInfo(shortCode);
         if (response == null) {
-            return Result.error(404, "短链不存在");
+            return CommonResponse.error(404, "短链不存在");
         }
-        return Result.success(response);
+        return CommonResponse.success(response);
     }
 
     @Operation(summary = "查询访问统计", description = "查询短链的总PV、今日PV、近7日PV及Top10来源Referer")
@@ -112,14 +112,14 @@ public class LinkCutController {
             @ApiResponse(responseCode = "404", description = "短链不存在")
     })
     @GetMapping("/api/link/{shortCode}/stats")
-    public Result<LinkStatsResponse> getLinkStats(
+    public CommonResponse<LinkAccessStatsResponse> getLinkStats(
             @Parameter(description = "短链码", required = true, example = "abc123")
             @PathVariable String shortCode) {
-        LinkStatsResponse response = linkCutService.getLinkStats(shortCode);
+        LinkAccessStatsResponse response = linkCutService.getLinkStats(shortCode);
         if (response == null) {
-            return Result.error(404, "短链不存在");
+            return CommonResponse.error(404, "短链不存在");
         }
-        return Result.success(response);
+        return CommonResponse.success(response);
     }
 
     @Operation(summary = "删除短链", description = "逻辑删除短链（status=0），同步失效 L1 Caffeine + L2 Redis 缓存")
@@ -128,14 +128,14 @@ public class LinkCutController {
             @ApiResponse(responseCode = "404", description = "短链不存在或已删除")
     })
     @DeleteMapping("/api/link/{shortCode}")
-    public Result<Void> deleteShortLink(
+    public CommonResponse<Void> deleteShortLink(
             @Parameter(description = "短链码", required = true, example = "abc123")
             @PathVariable String shortCode) {
         boolean deleted = linkCutService.deleteShortLink(shortCode);
         if (!deleted) {
-            return Result.error(404, "短链不存在或已删除");
+            return CommonResponse.error(404, "短链不存在或已删除");
         }
-        return Result.success();
+        return CommonResponse.success();
     }
 
     @Operation(summary = "延期过期时间", description = "在原有过期时间基础上增加指定秒数，同步刷新 Redis 缓存 TTL")
@@ -144,23 +144,23 @@ public class LinkCutController {
             @ApiResponse(responseCode = "404", description = "短链不存在")
     })
     @PutMapping("/api/link/{shortCode}/expire")
-    public Result<ExpireExtendResponse> extendExpireTime(
+    public CommonResponse<ExtendExpireResponse> extendExpireTime(
             @Parameter(description = "短链码", required = true, example = "abc123")
             @PathVariable String shortCode,
-            @Valid @RequestBody ExpireExtendRequest request) {
-        ExpireExtendResponse response = linkCutService.extendExpireTime(shortCode, request.getExtendSeconds());
+            @Valid @RequestBody ExtendExpireRequest request) {
+        ExtendExpireResponse response = linkCutService.extendExpireTime(shortCode, request.getExtendSeconds());
         if (response == null) {
-            return Result.error(404, "短链不存在");
+            return CommonResponse.error(404, "短链不存在");
         }
-        return Result.success(response);
+        return CommonResponse.success(response);
     }
 
     @Operation(summary = "缓存统计", description = "查看 Caffeine L1 命中率和布隆过滤器当前条目数")
     @ApiResponse(responseCode = "200", description = "查询成功")
     @GetMapping("/api/cache/stats")
-    public Result<CacheStatsResponse> getCacheStats() {
+    public CommonResponse<CacheStatsResponse> getCacheStats() {
         CacheStats stats = linkCacheManager.getLocalCacheStats();
-        return Result.success(CacheStatsResponse.builder()
+        return CommonResponse.success(CacheStatsResponse.builder()
                 .hitCount(stats.hitCount())
                 .missCount(stats.missCount())
                 .hitRate(stats.hitRate())

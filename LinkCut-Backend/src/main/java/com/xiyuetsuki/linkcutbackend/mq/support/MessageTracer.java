@@ -1,4 +1,4 @@
-package com.xiyuetsuki.linkcutbackend.mq;
+package com.xiyuetsuki.linkcutbackend.mq.support;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -139,7 +139,6 @@ public class MessageTracer {
      * @param success  本次重试是否成功
      * @param costMs   耗时
      */
-    @SuppressWarnings("unused")
     public void traceRetry(String payload, int retries, boolean success, long costMs) {
         Map<String, Object> event = newEvent(success ? "RETRY_SUCCESS" : "RETRY_FAIL", null);
         event.put("retries", retries);
@@ -207,12 +206,11 @@ public class MessageTracer {
     private static void appendJsonValue(StringBuilder sb, Object value) {
         if (value == null) {
             sb.append("null");
-        } else if (value instanceof String s) {
-            appendJsonString(sb, s);
+        } else if (value instanceof String) {
+            appendJsonString(sb, (String) value);
         } else if (value instanceof Number || value instanceof Boolean) {
             sb.append(value);
         } else {
-            // 兜底：转为字符串
             appendJsonString(sb, value.toString());
         }
     }

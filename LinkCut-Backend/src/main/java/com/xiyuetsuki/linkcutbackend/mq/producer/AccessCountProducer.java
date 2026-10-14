@@ -2,7 +2,7 @@ package com.xiyuetsuki.linkcutbackend.mq.producer;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.xiyuetsuki.linkcutbackend.mq.MessageTracer;
+import com.xiyuetsuki.linkcutbackend.mq.support.MessageTracer;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.rocketmq.client.exception.MQClientException;
 import org.apache.rocketmq.client.producer.DefaultMQProducer;
@@ -19,10 +19,10 @@ import java.util.Map;
 import java.util.UUID;
 
 /**
- * 访问计数 Increment 生产者
+ * 访问计数生产者
  * <p>
  * 短链每次被跳转时，由 {@code LinkCutController.redirect()} 调用 {@link #sendIncrement(String)}，
- * 将短链码异步发送到 RocketMQ，由 {@link com.xiyuetsuki.linkcutbackend.mq.consumer.IncrementConsumer}
+ * 将短链码异步发送到 RocketMQ，由 {@link com.xiyuetsuki.linkcutbackend.mq.consumer.AccessCountConsumer}
  * 批量合并后执行 {@code UPDATE ... SET access_count = access_count + N}。
  * <p>
  * 与访问日志解耦为独立 Topic（{@code linkcut_access_incr}），各自独立扩展和消费。
@@ -31,7 +31,7 @@ import java.util.UUID;
  */
 @Slf4j
 @Component
-public class IncrementProducer {
+public class AccessCountProducer {
 
     @Value("${rocketmq.access-incr.topic}")
     private String topic;
@@ -43,9 +43,9 @@ public class IncrementProducer {
     private final ObjectMapper objectMapper;
     private final MessageTracer messageTracer;
 
-    public IncrementProducer(DefaultMQProducer producer,
-                             ObjectMapper objectMapper,
-                             MessageTracer messageTracer) {
+    public AccessCountProducer(DefaultMQProducer producer,
+                               ObjectMapper objectMapper,
+                               MessageTracer messageTracer) {
         this.producer = producer;
         this.objectMapper = objectMapper;
         this.messageTracer = messageTracer;

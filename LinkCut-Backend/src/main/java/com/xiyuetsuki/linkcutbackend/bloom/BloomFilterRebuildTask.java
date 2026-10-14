@@ -1,4 +1,4 @@
-package com.xiyuetsuki.linkcutbackend.scheduler;
+package com.xiyuetsuki.linkcutbackend.bloom;
 
 import com.xiyuetsuki.linkcutbackend.repository.ShortLinkRepository;
 import org.redisson.api.RBloomFilter;
@@ -11,6 +11,12 @@ import org.springframework.stereotype.Component;
 
 import java.util.List;
 
+/**
+ * 布隆过滤器定时重建任务
+ * <p>
+ * 每日凌晨 3 点扫描 DB 中所有有效短链码，重建布隆过滤器以清理已删除条目，
+ * 使用 {@code RENAME} 原子切换新旧过滤器，保证重建期间服务无中断。
+ */
 @Component
 public class BloomFilterRebuildTask {
 

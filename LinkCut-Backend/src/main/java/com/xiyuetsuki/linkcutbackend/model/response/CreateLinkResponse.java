@@ -1,4 +1,4 @@
-package com.xiyuetsuki.linkcutbackend.dto;
+package com.xiyuetsuki.linkcutbackend.model.response;
 
 import io.swagger.v3.oas.annotations.media.Schema;
 import lombok.AllArgsConstructor;
@@ -9,7 +9,7 @@ import lombok.NoArgsConstructor;
 import java.time.LocalDateTime;
 
 /**
- * 创建短链响应 DTO
+ * 创建短链响应
  */
 @Data
 @Builder

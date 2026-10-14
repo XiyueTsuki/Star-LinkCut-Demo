@@ -1,7 +1,7 @@
 package com.xiyuetsuki.linkcutbackend.repository;
 
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
-import com.xiyuetsuki.linkcutbackend.entity.ShortLink;
+import com.xiyuetsuki.linkcutbackend.model.entity.ShortLink;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
@@ -23,7 +23,7 @@ public interface ShortLinkRepository extends BaseMapper<ShortLink> {
      * 原子递增短链访问计数
      * <p>
      * 使用 {@code SET access_count = access_count + #{delta}} 保证并发安全。
-     * 由 {@link com.xiyuetsuki.linkcutbackend.mq.consumer.IncrementConsumer} 批量合并后调用。
+     * 由 {@link com.xiyuetsuki.linkcutbackend.mq.consumer.AccessCountConsumer} 批量合并后调用。
      *
      * @param shortCode 短链码
      * @param delta     增量（合并后的累计次数，如某批次出现 8 次则 delta=8）

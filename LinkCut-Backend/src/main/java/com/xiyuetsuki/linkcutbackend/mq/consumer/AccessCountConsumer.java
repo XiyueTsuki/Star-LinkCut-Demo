@@ -2,7 +2,7 @@ package com.xiyuetsuki.linkcutbackend.mq.consumer;
 
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.xiyuetsuki.linkcutbackend.mq.MessageTracer;
+import com.xiyuetsuki.linkcutbackend.mq.support.MessageTracer;
 import com.xiyuetsuki.linkcutbackend.repository.ShortLinkRepository;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.rocketmq.common.message.MessageExt;
@@ -15,7 +15,7 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * 访问计数 Increment 消费者
+ * 访问计数消费者
  * <p>
  * 从 {@code linkcut_access_incr} Topic 批量拉取 increment 消息，
  * 按 shortCode 合并计数后，逐条执行 {@code UPDATE ... SET access_count = access_count + N}。
@@ -27,15 +27,15 @@ import java.util.Map;
  */
 @Slf4j
 @Component
-public class IncrementConsumer {
+public class AccessCountConsumer {
 
     private final ShortLinkRepository shortLinkRepository;
     private final ObjectMapper objectMapper;
     private final MessageTracer messageTracer;
 
-    public IncrementConsumer(ShortLinkRepository shortLinkRepository,
-                             ObjectMapper objectMapper,
-                             MessageTracer messageTracer) {
+    public AccessCountConsumer(ShortLinkRepository shortLinkRepository,
+                               ObjectMapper objectMapper,
+                               MessageTracer messageTracer) {
         this.shortLinkRepository = shortLinkRepository;
         this.objectMapper = objectMapper;
         this.messageTracer = messageTracer;

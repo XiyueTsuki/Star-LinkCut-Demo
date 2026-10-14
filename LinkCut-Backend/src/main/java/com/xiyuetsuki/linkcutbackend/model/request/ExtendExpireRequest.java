@@ -1,4 +1,4 @@
-package com.xiyuetsuki.linkcutbackend.dto;
+package com.xiyuetsuki.linkcutbackend.model.request;
 
 import io.swagger.v3.oas.annotations.media.Schema;
 import jakarta.validation.constraints.Min;
@@ -7,7 +7,7 @@ import lombok.Data;
 
 @Data
 @Schema(description = "过期时间延期请求")
-public class ExpireExtendRequest {
+public class ExtendExpireRequest {
 
     @NotNull(message = "延期秒数不能为空")
     @Min(value = 60, message = "延期最少60秒")

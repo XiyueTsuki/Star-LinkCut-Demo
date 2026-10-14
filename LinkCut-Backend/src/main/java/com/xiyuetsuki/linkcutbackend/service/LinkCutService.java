@@ -1,10 +1,10 @@
 package com.xiyuetsuki.linkcutbackend.service;
 
-import com.xiyuetsuki.linkcutbackend.dto.CreateLinkRequest;
-import com.xiyuetsuki.linkcutbackend.dto.CreateLinkResponse;
-import com.xiyuetsuki.linkcutbackend.dto.ExpireExtendResponse;
-import com.xiyuetsuki.linkcutbackend.dto.LinkInfoResponse;
-import com.xiyuetsuki.linkcutbackend.dto.LinkStatsResponse;
+import com.xiyuetsuki.linkcutbackend.model.request.CreateLinkRequest;
+import com.xiyuetsuki.linkcutbackend.model.response.CreateLinkResponse;
+import com.xiyuetsuki.linkcutbackend.model.response.ExtendExpireResponse;
+import com.xiyuetsuki.linkcutbackend.model.response.LinkAccessStatsResponse;
+import com.xiyuetsuki.linkcutbackend.model.response.LinkDetailResponse;
 
 /**
  * 短链服务接口
@@ -24,12 +24,12 @@ public interface LinkCutService {
     /**
      * 查询短链详情
      */
-    LinkInfoResponse getLinkInfo(String shortCode);
+    LinkDetailResponse getLinkInfo(String shortCode);
 
     /**
      * 查询短链访问统计
      */
-    LinkStatsResponse getLinkStats(String shortCode);
+    LinkAccessStatsResponse getLinkStats(String shortCode);
 
     /**
      * 删除短链（逻辑删除）
@@ -46,5 +46,5 @@ public interface LinkCutService {
      * @param extendSeconds 延期秒数
      * @return 延期后的过期时间，短链不存在返回 null
      */
-    ExpireExtendResponse extendExpireTime(String shortCode, Long extendSeconds);
+    ExtendExpireResponse extendExpireTime(String shortCode, Long extendSeconds);
 }

@@ -1,4 +1,4 @@
-package com.xiyuetsuki.linkcutbackend.mq;
+package com.xiyuetsuki.linkcutbackend.mq.support;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.redisson.api.RList;

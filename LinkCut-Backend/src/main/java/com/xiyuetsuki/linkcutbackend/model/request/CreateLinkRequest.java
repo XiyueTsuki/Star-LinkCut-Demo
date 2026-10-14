@@ -1,4 +1,4 @@
-package com.xiyuetsuki.linkcutbackend.dto;
+package com.xiyuetsuki.linkcutbackend.model.request;
 
 import io.swagger.v3.oas.annotations.media.Schema;
 import jakarta.validation.constraints.NotBlank;
@@ -6,7 +6,7 @@ import jakarta.validation.constraints.Pattern;
 import lombok.Data;
 
 /**
- * 创建短链请求 DTO
+ * 创建短链请求
  */
 @Data
 @Schema(description = "创建短链请求")

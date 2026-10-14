@@ -25,7 +25,7 @@ import java.io.IOException;
  *   <li>ParamFlowRule —— IP 级限流（基于热点参数 clientIp 匹配）</li>
  * </ul>
  * 两种规则叠加校验，任一超限均抛出 BlockException，由
- * {@link com.xiyuetsuki.linkcutbackend.common.SentinelBlockHandler} 统一返回 429。
+ * {@link com.xiyuetsuki.linkcutbackend.exception.SentinelExceptionHandler} 统一返回 429。
  * <p>
  * 相比 Guava RateLimiter 方案的优势：
  * <ul>

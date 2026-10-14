@@ -1,6 +1,6 @@
-package com.xiyuetsuki.linkcutbackend.common;
+package com.xiyuetsuki.linkcutbackend.exception;
 
-import com.xiyuetsuki.linkcutbackend.common.Result;
+import com.xiyuetsuki.linkcutbackend.common.CommonResponse;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
@@ -20,41 +20,41 @@ public class GlobalExceptionHandler {
 
     @ExceptionHandler(MethodArgumentNotValidException.class)
     @ResponseStatus(HttpStatus.BAD_REQUEST)
-    public Result<Void> handleValidation(MethodArgumentNotValidException e) {
+    public CommonResponse<Void> handleValidation(MethodArgumentNotValidException e) {
         String message = e.getBindingResult().getFieldErrors().stream()
                 .map(err -> err.getField() + ": " + err.getDefaultMessage())
                 .reduce((a, b) -> a + "; " + b)
                 .orElse("参数校验失败");
-        return Result.error(400, message);
+        return CommonResponse.error(400, message);
     }
 
     @ExceptionHandler(BindException.class)
     @ResponseStatus(HttpStatus.BAD_REQUEST)
-    public Result<Void> handleBind(BindException e) {
+    public CommonResponse<Void> handleBind(BindException e) {
         String message = e.getFieldErrors().stream()
                 .map(err -> err.getField() + ": " + err.getDefaultMessage())
                 .reduce((a, b) -> a + "; " + b)
                 .orElse("参数绑定失败");
-        return Result.error(400, message);
+        return CommonResponse.error(400, message);
     }
 
     @ExceptionHandler(IllegalArgumentException.class)
     @ResponseStatus(HttpStatus.BAD_REQUEST)
-    public Result<Void> handleIllegalArgument(IllegalArgumentException e) {
-        return Result.error(400, e.getMessage());
+    public CommonResponse<Void> handleIllegalArgument(IllegalArgumentException e) {
+        return CommonResponse.error(400, e.getMessage());
     }
 
     @ExceptionHandler(RuntimeException.class)
     @ResponseStatus(HttpStatus.INTERNAL_SERVER_ERROR)
-    public Result<Void> handleRuntime(RuntimeException e) {
+    public CommonResponse<Void> handleRuntime(RuntimeException e) {
         log.error("Runtime exception", e);
-        return Result.error(500, "服务器内部错误");
+        return CommonResponse.error(500, "服务器内部错误");
     }
 
     @ExceptionHandler(Exception.class)
     @ResponseStatus(HttpStatus.INTERNAL_SERVER_ERROR)
-    public Result<Void> handleException(Exception e) {
+    public CommonResponse<Void> handleException(Exception e) {
         log.error("Unknown exception", e);
-        return Result.error(500, "服务器内部错误");
+        return CommonResponse.error(500, "服务器内部错误");
     }
 }

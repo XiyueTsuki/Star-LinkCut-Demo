@@ -1,7 +1,7 @@
 package com.xiyuetsuki.linkcutbackend;
 
 import com.xiyuetsuki.linkcutbackend.common.Base62Utils;
-import com.xiyuetsuki.linkcutbackend.generator.ShortCodeGenerator;
+import com.xiyuetsuki.linkcutbackend.shortcode.ShortCodeGenerator;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;

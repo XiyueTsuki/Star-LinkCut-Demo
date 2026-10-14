@@ -1,4 +1,4 @@
-package com.xiyuetsuki.linkcutbackend.dto;
+package com.xiyuetsuki.linkcutbackend.model.response;
 
 import io.swagger.v3.oas.annotations.media.Schema;
 import lombok.Builder;

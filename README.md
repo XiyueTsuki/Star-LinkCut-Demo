@@ -187,7 +187,7 @@ LinkCut 是一个高并发短链服务，采用 **Caffeine L1 本地缓存 + Red
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │                     访问日志发送 (AccessLogProducer)              │
-│                     增量计数发送 (IncrementProducer)              │
+│                     增量计数发送 (AccessCountProducer)              │
 └────────────────────────────┬────────────────────────────────────┘
                              │
                 ┌────────────┼────────────┐
@@ -285,13 +285,13 @@ Star-LinkCut-Demo/
 │   ├── pom.xml                         # Maven 依赖（Spring Boot 4.1.0 / Java 21）
 │   ├── src/main/java/.../linkcutbackend/
 │   │   ├── LinkCutBackendApplication.java   # 启动类（@EnableScheduling）
+│   │   ├── bloom/
+│   │   │   └── BloomFilterRebuildTask.java  # 布隆过滤器定时重建（每日 03:00）
 │   │   ├── cache/
 │   │   │   └── LinkCacheManager.java        # L1 Caffeine + L2 Redis 缓存管理器
 │   │   ├── common/
 │   │   │   ├── Base62Utils.java             # Base62 编解码工具
-│   │   │   ├── GlobalExceptionHandler.java  # 全局异常处理器
-│   │   │   ├── SentinelBlockHandler.java    # Sentinel 限流/熔断异常全局处理
-│   │   │   └── Result.java                  # 统一响应结果封装
+│   │   │   └── CommonResponse.java          # 统一响应结果封装
 │   │   ├── config/
 │   │   │   ├── BloomFilterConfig.java        # RBloomFilter 初始化 + 启动加载
 │   │   │   ├── OpenApiConfig.java            # SpringDoc OpenAPI 配置
@@ -300,39 +300,43 @@ Star-LinkCut-Demo/
 │   │   │   └── SentinelConfig.java           # Sentinel 初始化 + FlowRule/ParamFlowRule/DegradeRule
 │   │   ├── controller/
 │   │   │   └── LinkCutController.java        # REST 控制器（7 个端点 + IP 提取）
-│   │   ├── dto/
-│   │   │   ├── CacheStatsResponse.java       # 缓存统计响应
-│   │   │   ├── CreateLinkRequest.java        # 创建短链请求（含 @Valid 校验）
-│   │   │   ├── CreateLinkResponse.java       # 创建短链响应
-│   │   │   ├── ExpireExtendRequest.java      # 延期请求
-│   │   │   ├── ExpireExtendResponse.java     # 延期响应
-│   │   │   ├── LinkInfoResponse.java         # 短链详情响应
-│   │   │   └── LinkStatsResponse.java        # 访问统计响应（含 RefererItem）
-│   │   ├── entity/
-│   │   │   ├── AccessLog.java                # 访问日志实体
-│   │   │   ├── ShortCodeSnapshot.java        # 短链码快照实体
-│   │   │   └── ShortLink.java                # 短链主表实体（@TableLogic）
+│   │   ├── exception/
+│   │   │   ├── GlobalExceptionHandler.java   # 全局异常处理器
+│   │   │   └── SentinelExceptionHandler.java # Sentinel 限流/熔断异常全局处理
 │   │   ├── filter/
 │   │   │   └── RateLimitFilter.java          # Sentinel 全局+IP 双层限流过滤器
-│   │   ├── generator/
-│   │   │   ├── ShortCodeGenerator.java       # 短码生成器接口
-│   │   │   └── SnowflakeShortCodeGenerator.java  # Snowflake 雪花算法实现
+│   │   ├── model/
+│   │   │   ├── entity/
+│   │   │   │   ├── AccessLog.java                # 访问日志实体
+│   │   │   │   ├── ShortCodeSnapshot.java        # 短链码快照实体
+│   │   │   │   └── ShortLink.java                # 短链主表实体（@TableLogic）
+│   │   │   ├── request/
+│   │   │   │   ├── CreateLinkRequest.java        # 创建短链请求（含 @Valid 校验）
+│   │   │   │   └── ExtendExpireRequest.java      # 延期请求
+│   │   │   └── response/
+│   │   │       ├── CacheStatsResponse.java       # 缓存统计响应
+│   │   │       ├── CreateLinkResponse.java       # 创建短链响应
+│   │   │       ├── ExtendExpireResponse.java     # 延期响应
+│   │   │       ├── LinkAccessStatsResponse.java  # 访问统计响应（含 RefererItem）
+│   │   │       └── LinkDetailResponse.java       # 短链详情响应
 │   │   ├── mq/
-│   │   │   ├── BacklogMonitor.java           # 消息积压监控 + DLQ 清理 + 本地文件监控
-│   │   │   ├── MessagePersistenceHelper.java # 三级降级持久化 (Redis→重试→本地文件)
-│   │   │   ├── MessageTracer.java            # 消息轨迹记录器 (6 种事件, 独立 logger)
 │   │   │   ├── consumer/
-│   │   │   │   ├── AccessLogConsumer.java    # 访问日志批量消费 + INSERT IGNORE + DLQ
-│   │   │   │   └── IncrementConsumer.java    # 访问计数批量消费 (按 shortCode 合并 +N)
-│   │   │   └── producer/
-│   │   │       ├── AccessLogProducer.java    # 访问日志异步发送 + 降级队列 + 定时重试
-│   │   │       └── IncrementProducer.java    # 访问计数异步发送 (无降级, 丢失可重算)
+│   │   │   │   ├── AccessCountConsumer.java      # 访问计数批量消费 (按 shortCode 合并 +N)
+│   │   │   │   └── AccessLogConsumer.java        # 访问日志批量消费 + INSERT IGNORE + DLQ
+│   │   │   ├── producer/
+│   │   │   │   ├── AccessCountProducer.java      # 访问计数异步发送 (无降级, 丢失可重算)
+│   │   │   │   └── AccessLogProducer.java        # 访问日志异步发送 + 降级队列 + 定时重试
+│   │   │   └── support/
+│   │   │       ├── MessageBacklogMonitor.java    # 消息积压监控 + DLQ 清理 + 本地文件监控
+│   │   │       ├── MessagePersistenceHelper.java # 三级降级持久化 (Redis→重试→本地文件)
+│   │   │       └── MessageTracer.java            # 消息轨迹记录器 (6 种事件, 独立 logger)
 │   │   ├── repository/
 │   │   │   ├── AccessLogRepository.java      # 访问日志 Mapper（统计+批量写入）
 │   │   │   ├── ShortCodeSnapshotRepository.java  # 快照表 Mapper
 │   │   │   └── ShortLinkRepository.java      # 短链主表 Mapper
-│   │   ├── scheduler/
-│   │   │   └── BloomFilterRebuildTask.java   # 布隆过滤器定时重建（每日 03:00）
+│   │   ├── shortcode/
+│   │   │   ├── ShortCodeGenerator.java       # 短码生成器接口
+│   │   │   └── SnowflakeShortCodeGenerator.java  # Snowflake 雪花算法实现
 │   │   └── service/
 │   │       ├── LinkCutService.java           # 短链服务接口
 │   │       └── impl/

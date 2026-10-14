@@ -1,4 +1,4 @@
-package com.xiyuetsuki.linkcutbackend.generator;
+package com.xiyuetsuki.linkcutbackend.shortcode;
 
 import com.xiyuetsuki.linkcutbackend.common.Base62Utils;
 import org.springframework.beans.factory.annotation.Value;

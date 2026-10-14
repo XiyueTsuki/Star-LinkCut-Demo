@@ -1,4 +1,4 @@
-package com.xiyuetsuki.linkcutbackend.entity;
+package com.xiyuetsuki.linkcutbackend.model.entity;
 
 import com.baomidou.mybatisplus.annotation.IdType;
 import com.baomidou.mybatisplus.annotation.TableId;

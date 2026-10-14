@@ -3,14 +3,14 @@ package com.xiyuetsuki.linkcutbackend.service.impl;
 import com.alibaba.csp.sentinel.annotation.SentinelResource;
 import com.alibaba.csp.sentinel.slots.block.BlockException;
 import com.xiyuetsuki.linkcutbackend.cache.LinkCacheManager;
-import com.xiyuetsuki.linkcutbackend.dto.CreateLinkRequest;
-import com.xiyuetsuki.linkcutbackend.dto.CreateLinkResponse;
-import com.xiyuetsuki.linkcutbackend.dto.ExpireExtendResponse;
-import com.xiyuetsuki.linkcutbackend.dto.LinkInfoResponse;
-import com.xiyuetsuki.linkcutbackend.dto.LinkStatsResponse;
-import com.xiyuetsuki.linkcutbackend.entity.ShortCodeSnapshot;
-import com.xiyuetsuki.linkcutbackend.entity.ShortLink;
-import com.xiyuetsuki.linkcutbackend.generator.ShortCodeGenerator;
+import com.xiyuetsuki.linkcutbackend.model.request.CreateLinkRequest;
+import com.xiyuetsuki.linkcutbackend.model.response.CreateLinkResponse;
+import com.xiyuetsuki.linkcutbackend.model.response.ExtendExpireResponse;
+import com.xiyuetsuki.linkcutbackend.model.response.LinkAccessStatsResponse;
+import com.xiyuetsuki.linkcutbackend.model.response.LinkDetailResponse;
+import com.xiyuetsuki.linkcutbackend.model.entity.ShortCodeSnapshot;
+import com.xiyuetsuki.linkcutbackend.model.entity.ShortLink;
+import com.xiyuetsuki.linkcutbackend.shortcode.ShortCodeGenerator;
 import com.xiyuetsuki.linkcutbackend.repository.AccessLogRepository;
 import com.xiyuetsuki.linkcutbackend.repository.ShortCodeSnapshotRepository;
 import com.xiyuetsuki.linkcutbackend.repository.ShortLinkRepository;
@@ -236,7 +236,7 @@ public class LinkCutServiceImpl implements LinkCutService {
     }
 
     @Override
-    public LinkInfoResponse getLinkInfo(String shortCode) {
+    public LinkDetailResponse getLinkInfo(String shortCode) {
         if (!linkCacheManager.mightContain(shortCode)) {
             return null;
         }
@@ -244,7 +244,7 @@ public class LinkCutServiceImpl implements LinkCutService {
         if (shortLink == null) {
             return null;
         }
-        return LinkInfoResponse.builder()
+        return LinkDetailResponse.builder()
                 .shortCode(shortLink.getShortCode())
                 .shortUrl(domain + "/" + shortLink.getShortCode())
                 .originUrl(shortLink.getOriginUrl())
@@ -256,7 +256,7 @@ public class LinkCutServiceImpl implements LinkCutService {
     }
 
     @Override
-    public LinkStatsResponse getLinkStats(String shortCode) {
+    public LinkAccessStatsResponse getLinkStats(String shortCode) {
         if (!linkCacheManager.mightContain(shortCode)) {
             return null;
         }
@@ -269,15 +269,15 @@ public class LinkCutServiceImpl implements LinkCutService {
         Long todayPV = accessLogRepository.countByShortCodeSince(shortCode, todayStart);
         Long weekPV = accessLogRepository.countByShortCodeSince(shortCode, weekStart);
 
-        java.util.List<LinkStatsResponse.RefererItem> topReferers =
+        java.util.List<LinkAccessStatsResponse.RefererItem> topReferers =
                 accessLogRepository.topReferers(shortCode, 10).stream()
-                        .map(row -> LinkStatsResponse.RefererItem.builder()
+                        .map(row -> LinkAccessStatsResponse.RefererItem.builder()
                                 .referer((String) row.get("referer"))
                                 .count(((Number) row.get("cnt")).longValue())
                                 .build())
                         .toList();
 
-        return LinkStatsResponse.builder()
+        return LinkAccessStatsResponse.builder()
                 .shortCode(shortCode)
                 .totalPV(totalPV)
                 .todayPV(todayPV)
@@ -304,7 +304,7 @@ public class LinkCutServiceImpl implements LinkCutService {
 
     @Override
     @Transactional(rollbackFor = Exception.class)
-    public ExpireExtendResponse extendExpireTime(String shortCode, Long extendSeconds) {
+    public ExtendExpireResponse extendExpireTime(String shortCode, Long extendSeconds) {
         ShortLink shortLink = shortLinkRepository.findByShortCode(shortCode);
         if (shortLink == null) {
             return null;
@@ -323,7 +323,7 @@ public class LinkCutServiceImpl implements LinkCutService {
         linkCacheManager.putShortLink(shortCode, shortLink.getOriginUrl(), ttlSeconds);
 
         log.info("Expire time extended: shortCode={}, newExpireTime={}", shortCode, newExpireTime);
-        return ExpireExtendResponse.builder()
+        return ExtendExpireResponse.builder()
                 .shortCode(shortCode)
                 .newExpireTime(newExpireTime)
                 .build();

@@ -1,7 +1,7 @@
 package com.xiyuetsuki.linkcutbackend.repository;
 
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
-import com.xiyuetsuki.linkcutbackend.entity.ShortCodeSnapshot;
+import com.xiyuetsuki.linkcutbackend.model.entity.ShortCodeSnapshot;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;

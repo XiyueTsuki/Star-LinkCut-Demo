@@ -3,8 +3,8 @@ package com.xiyuetsuki.linkcutbackend.config;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import com.fasterxml.jackson.databind.SerializationFeature;
+import com.xiyuetsuki.linkcutbackend.mq.consumer.AccessCountConsumer;
 import com.xiyuetsuki.linkcutbackend.mq.consumer.AccessLogConsumer;
-import com.xiyuetsuki.linkcutbackend.mq.consumer.IncrementConsumer;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.rocketmq.client.consumer.DefaultMQPushConsumer;
 import org.apache.rocketmq.client.consumer.listener.ConsumeConcurrentlyStatus;
@@ -116,7 +116,7 @@ public class RocketMQConfig {
      * 线程数和批量大小沿用主 Consumer 配置，增量消息极小（~100 字节），压力可控。
      */
     @Bean(initMethod = "start", destroyMethod = "shutdown")
-    public DefaultMQPushConsumer incrPushConsumer(IncrementConsumer incrementConsumer) throws MQClientException {
+    public DefaultMQPushConsumer incrPushConsumer(AccessCountConsumer accessCountConsumer) throws MQClientException {
         DefaultMQPushConsumer consumer = new DefaultMQPushConsumer(incrConsumerGroup);
         consumer.setNamesrvAddr(nameServer);
         consumer.setConsumeFromWhere(ConsumeFromWhere.CONSUME_FROM_LAST_OFFSET);
@@ -127,7 +127,7 @@ public class RocketMQConfig {
         consumer.subscribe(incrTopic, incrTag);
 
         consumer.registerMessageListener((MessageListenerConcurrently) (msgs, context) -> {
-            incrementConsumer.handleBatch(msgs);
+            accessCountConsumer.handleBatch(msgs);
             return ConsumeConcurrentlyStatus.CONSUME_SUCCESS;
         });
 

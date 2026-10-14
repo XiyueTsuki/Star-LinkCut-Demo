@@ -1,4 +1,4 @@
-package com.xiyuetsuki.linkcutbackend.generator;
+package com.xiyuetsuki.linkcutbackend.shortcode;
 
 /**
  * 短链码生成器接口

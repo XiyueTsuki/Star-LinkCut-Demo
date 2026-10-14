@@ -1,4 +1,4 @@
-package com.xiyuetsuki.linkcutbackend.mq;
+package com.xiyuetsuki.linkcutbackend.mq.support;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
@@ -24,9 +24,9 @@ import java.util.Map;
  * 生产环境可在此接入钉钉/飞书/邮件告警。
  */
 @Component
-public class BacklogMonitor {
+public class MessageBacklogMonitor {
 
-    private static final Logger log = LoggerFactory.getLogger(BacklogMonitor.class);
+    private static final Logger log = LoggerFactory.getLogger(MessageBacklogMonitor.class);
 
     @Value("${rocketmq.fallback.queue-key}")
     private String fallbackQueueKey;
@@ -53,9 +53,9 @@ public class BacklogMonitor {
     @Value("${rocketmq.fallback.local-fallback-max-size-mb}")
     private int localFallbackMaxSizeMb;
 
-    public BacklogMonitor(RedissonClient redissonClient,
-                          ObjectMapper objectMapper,
-                          MessagePersistenceHelper persistenceHelper) {
+    public MessageBacklogMonitor(RedissonClient redissonClient,
+                                 ObjectMapper objectMapper,
+                                 MessagePersistenceHelper persistenceHelper) {
         this.redissonClient = redissonClient;
         this.objectMapper = objectMapper;
         this.persistenceHelper = persistenceHelper;
