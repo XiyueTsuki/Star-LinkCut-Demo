@@ -23,7 +23,7 @@
 
 ## 项目简介
 
-LinkCut 是一个高并发短链服务，采用 **Caffeine L1 本地缓存 + Redis L2 分布式缓存 + Redisson 布隆过滤器 + 分布式锁 + RocketMQ 异步日志** 架构，完整覆盖了高并发场景下缓存的经典问题及多实例一致性，同时具备消息降级、死信队列、积压监控等生产级可靠性设计。
+LinkCut 是一个高并发短链服务，采用 **Caffeine L1 本地缓存 + Redis L2 分布式缓存 + Redisson 布隆过滤器 + 分布式锁 + Sentinel 限流熔断 + RocketMQ 异步日志** 架构，完整覆盖了高并发场景下缓存的经典问题及多实例一致性，同时具备流控、熔断、消息降级、死信队列、积压监控等生产级可靠性设计。
 
 | 维度 | 方案 |
 |------|------|
@@ -33,7 +33,8 @@ LinkCut 是一个高并发短链服务，采用 **Caffeine L1 本地缓存 + Red
 | 防击穿 | Redisson RLock 分布式锁（tryLock 3s 等待 / 10s 租约），锁内 double-check + 单线程回源 DB |
 | 防雪崩 | `calculateTtl()` 对 Redis TTL 施加 ±30% 随机偏移 |
 | 多实例一致性 | Redis Pub/Sub 广播 `linkcut:cache:invalidate`，毫秒级 Caffeine 跨实例失效 |
-| 限流 | Guava RateLimiter 全局 + IP 两级限流；IP 级限流器用 Caffeine 存储防泄漏 |
+| 限流 | Sentinel 1.8.8 滑动窗口计数器，全局 QPS + IP 级热点参数双层限流 |
+| 熔断 | Sentinel DegradeRule，MQ Producer / DB 查询 / DB 写入 3 个资源差异化熔断 |
 | 异步日志 | RocketMQ 5.3.0 原生客户端（零 Spring 依赖），异步发送 + 三级降级链 + DLQ 自动清理 + 消息轨迹 |
 | 访问计数 | RocketMQ 异步增量 → Consumer 批量合并 `access_count + N`，一次 UPDATE 替代 N 次 |
 | 接口文档 | SpringDoc OpenAPI → `http://localhost:8080/docs.html` |
@@ -52,8 +53,9 @@ LinkCut 是一个高并发短链服务，采用 **Caffeine L1 本地缓存 + Red
 | Redis | 8.2 | 缓存层（Redisson 3.43） |
 | Redisson | 3.43.0 | 分布式锁 + RBloomFilter + RBucket + RTopic(Pub/Sub) |
 | RocketMQ | 5.3.0 | 异步访问日志采集（原生 `rocketmq-client`） |
-| Guava | 33.4.0 | RateLimiter 限流 |
-| Caffeine | 3.2.0 | L1 本地缓存 + IP 限流器存储 |
+| Sentinel | 1.8.8 | 限流（FlowRule + ParamFlowRule）+ 熔断（DegradeRule） |
+| Guava | 33.4.0 | 基础工具（Base62 编解码等） |
+| Caffeine | 3.2.0 | L1 本地缓存 |
 | SpringDoc | 2.8.5 | OpenAPI 接口文档与在线调试（Swagger UI） |
 | Hutool | 5.8.34 | 通用工具库 |
 | Docker Compose | 3.3 | 容器编排（MySQL + Redis + RocketMQ） |
@@ -71,23 +73,29 @@ LinkCut 是一个高并发短链服务，采用 **Caffeine L1 本地缓存 + Red
               ▼                                  ▼
       创建短链 (POST)                      短链跳转 (GET)
               │                                  │
-  ┌───────────────────────┐          ┌──────────────────────────┐
-  │ Guava RateLimiter      │          │  Caffeine L1 本地缓存     │  ← 0 网络 IO
-  │ 全局 + IP 两级限流      │          │  ├─ 命中 → 直接返回 URL    │
-  └───────────┬───────────┘          │  └─ 未命中 → 查 Redis L2  │
-              │                      └────────────┬─────────────┘
-  ┌───────────▼───────────┐                       │ 未命中
-  │ Snowflake → Base62    │          ┌────────────▼─────────────┐
-  │ 短码生成 + 冲突检测     │          │  Redis L2 分布式缓存      │  ← Redis RBucket
-  │ 最多重试 5 次          │          │  ├─ 命中 → 回填 L1 + 返回  │
-  └───────────┬───────────┘          │  └─ 未命中 → 布隆过滤器    │
-              │                      └────────────┬─────────────┘
-  ┌───────────▼───────────┐                       │
-  │ MySQL 持久化 (status=1) │          ┌────────────▼─────────────┐
-  │ 写 Caffeine L1 + L2   │          │  Redisson RBloomFilter   │  ← 防穿透
-  │ 写入布隆过滤器          │          │  ├─ 不含 → 直接返回 404    │
-  │ 写 t_short_code_snap  │          │  └─ 含 → 获取分布式锁      │
-  └───────────────────────┘          └────────────┬─────────────┘
+  ┌───────────────────────────────────────────────────────┐
+  │ Sentinel FlowRule + ParamFlowRule                     │  ← 全局 + IP 双层限流
+  │ FlowRule: create-api 1000/redirect-api 10000 QPS      │
+  │ ParamFlowRule(idx=0=IP): 10/100 QPS per IP            │
+  └───────────────────────────┬───────────────────────────┘
+              │
+  ┌───────────▼───────────┐          ┌──────────────────────────┐
+  │ Snowflake → Base62    │          │  Caffeine L1 本地缓存     │  ← 0 网络 IO
+  │ 短码生成 + 冲突检测     │          │  ├─ 命中 → 直接返回 URL    │
+  │ 最多重试 5 次          │          │  └─ 未命中 → 查 Redis L2  │
+  └───────────┬───────────┘          └────────────┬─────────────┘
+              │                                   │ 未命中
+  ┌───────────▼───────────┐          ┌────────────▼─────────────┐
+  │ MySQL 持久化 (status=1) │          │  Redis L2 分布式缓存      │  ← Redis RBucket
+  │ 写 Caffeine L1 + L2   │          │  ├─ 命中 → 回填 L1 + 返回  │
+  │ 写入布隆过滤器          │          │  └─ 未命中 → 布隆过滤器    │
+  │ 写 t_short_code_snap  │          └────────────┬─────────────┘
+  └───────────────────────┘                       │
+                                     ┌────────────▼─────────────┐
+                                     │  Redisson RBloomFilter   │  ← 防穿透
+                                     │  ├─ 不含 → 直接返回 404    │
+                                     │  └─ 含 → 获取分布式锁      │
+                                     └────────────┬─────────────┘
                                                   │
                                      ┌────────────▼─────────────┐
                                      │  Redisson RLock 分布式锁   │  ← 防击穿
@@ -145,16 +153,34 @@ LinkCut 是一个高并发短链服务，采用 **Caffeine L1 本地缓存 + Red
 
 ### 限流体系
 
-| 维度 | 方案 | 配置 |
-|------|------|------|
-| 全局限流（创建） | Guava RateLimiter | dev: 1000 QPS / test: 100000 QPS |
-| IP 限流（创建） | Caffeine 缓存 Limiter，自动过期防泄漏 | dev: 10 QPS / test: 100000 QPS |
-| 全局限流（跳转） | Guava RateLimiter | dev: 10000 QPS / test: 100000 QPS |
-| IP 限流（跳转） | Caffeine 缓存 Limiter，自动过期防泄漏 | dev: 100 QPS / test: 100000 QPS |
+采用 Sentinel 1.8.8 **滑动窗口计数器算法**，替代 Guava RateLimiter 令牌桶方案：规则可动态调整、支持运行时 Dashboard 接入，是生产级限流解决方案。
 
-- IP 限流器使用 Caffeine `expireAfterAccess(10min, maxSize=10000/50000)` 存储，IP 无活跃访问后自动淘汰，无内存泄漏风险。
-- Swagger/OpenAPI 文档路径自动跳过限流检查。
-- 限流超限返回 `429 Too Many Requests`。
+| 维度 | 方案 | 配置（dev 环境） |
+|------|------|----------------|
+| 全局限流（创建） | Sentinel FlowRule `create-api` | 1,000 QPS |
+| IP 限流（创建） | Sentinel ParamFlowRule `idx=0=clientIp` | 10 QPS / IP |
+| 全局限流（跳转） | Sentinel FlowRule `redirect-api` | 10,000 QPS |
+| IP 限流（跳转） | Sentinel ParamFlowRule `idx=0=clientIp` | 100 QPS / IP |
+
+- IP 级限流通过 `ParamFlowRule` 热点参数流控实现，由 Sentinel 框架自动按参数维度（clientIp）统计窗口内请求数，无需手动维护 IP → RateLimiter 的 Caffeine 缓存。
+- Swagger/OpenAPI 路径、`/favicon.ico`、查询/统计/删除/延期接口跳过限流检查。
+- 限流超限返回 `429 Too Many Requests`，由 `SentinelBlockHandler` 全局异常处理器统一拦截 `FlowException`。
+- 压测环境（`application-test.yml`）将所有限流阈值设为 100,000，≈ 关闭限流。
+
+### 熔断体系
+
+新增 Sentinel DegradeRule 对 3 个核心资源实施差异化熔断保护：
+
+| 资源名 | 目标操作 | 触发条件 | 熔断窗口 | 降级行为 |
+|--------|---------|---------|---------|---------|
+| `mq-send-access-log` | RocketMQ Producer 异步发送 | 异常比例 > 30% | 10s 后半开探测 | 消息直接写入 Redis 降级队列 |
+| `db-query-short-link` | MySQL 短链查询（缓存穿透 DB 路径） | 慢调用比例 > 50%（RT > 200ms） | 5s 后半开探测 | 返回 null（展示 404） |
+| `db-create-short-link` | MySQL 短链写入 | 异常比例 > 20% | 10s 后半开探测 | 返回空响应（提示服务暂不可用） |
+
+**关键设计：**
+- `db-query-short-link` 仅包裹穿透 L1/L2 缓存后的 DB 查询路径。L1 Caffeine 和 L2 Redis 缓存命中时直接返回，不经过 Sentinel 统计——确保热点数据路由不受熔断影响。
+- 熔断超限返回 `503 Service Unavailable`，由 `SentinelBlockHandler` 全局异常处理器统一拦截 `DegradeException`。
+- 压测环境不加载熔断规则。
 
 ### 消息可靠性保障
 
@@ -264,12 +290,14 @@ Star-LinkCut-Demo/
 │   │   ├── common/
 │   │   │   ├── Base62Utils.java             # Base62 编解码工具
 │   │   │   ├── GlobalExceptionHandler.java  # 全局异常处理器
+│   │   │   ├── SentinelBlockHandler.java    # Sentinel 限流/熔断异常全局处理
 │   │   │   └── Result.java                  # 统一响应结果封装
 │   │   ├── config/
 │   │   │   ├── BloomFilterConfig.java        # RBloomFilter 初始化 + 启动加载
 │   │   │   ├── OpenApiConfig.java            # SpringDoc OpenAPI 配置
 │   │   │   ├── RedissonConfig.java           # Redisson 客户端配置
-│   │   │   └── RocketMQConfig.java           # RocketMQ Producer/Consumer 配置
+│   │   │   ├── RocketMQConfig.java           # RocketMQ Producer/Consumer 配置
+│   │   │   └── SentinelConfig.java           # Sentinel 初始化 + FlowRule/ParamFlowRule/DegradeRule
 │   │   ├── controller/
 │   │   │   └── LinkCutController.java        # REST 控制器（7 个端点 + IP 提取）
 │   │   ├── dto/
@@ -285,7 +313,7 @@ Star-LinkCut-Demo/
 │   │   │   ├── ShortCodeSnapshot.java        # 短链码快照实体
 │   │   │   └── ShortLink.java                # 短链主表实体（@TableLogic）
 │   │   ├── filter/
-│   │   │   └── RateLimitFilter.java          # Guava 全局+IP 两级限流过滤器
+│   │   │   └── RateLimitFilter.java          # Sentinel 全局+IP 双层限流过滤器
 │   │   ├── generator/
 │   │   │   ├── ShortCodeGenerator.java       # 短码生成器接口
 │   │   │   └── SnowflakeShortCodeGenerator.java  # Snowflake 雪花算法实现

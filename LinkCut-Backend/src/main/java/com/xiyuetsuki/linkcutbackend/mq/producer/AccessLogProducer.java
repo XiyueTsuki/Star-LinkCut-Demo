@@ -1,5 +1,7 @@
 package com.xiyuetsuki.linkcutbackend.mq.producer;
 
+import com.alibaba.csp.sentinel.annotation.SentinelResource;
+import com.alibaba.csp.sentinel.slots.block.BlockException;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.xiyuetsuki.linkcutbackend.mq.MessagePersistenceHelper;
@@ -29,6 +31,10 @@ import java.util.UUID;
  * 在短链重定向后异步发送访问日志消息，不阻塞主流程。
  * 发送失败时降级写入 Redis List 待重试队列，通过定时任务补偿重发。
  * 当降级队列水位超过阈值时，自动精简消息体以降低积压压力。
+ * <p>
+ * Sentinel 熔断保护：通过 {@code @SentinelResource("mq-send-access-log")} 注解，
+ * 当 RocketMQ 发送异常比例超过阈值时触发熔断，熔断期间直接走降级队列，
+ * 不再尝试发送到 RocketMQ。
  */
 @Slf4j
 @Component
@@ -75,12 +81,18 @@ public class AccessLogProducer {
 
     /**
      * 异步发送访问日志消息
+     * <p>
+     * Sentinel 熔断保护：当 RocketMQ 发送异常比例超过阈值时，
+     * 熔断器打开，BlockException 被抛出，由 {@link #sendAccessLogBlockHandler} 接管，
+     * 直接将消息写入降级队列。
      *
      * @param shortCode 短链码
      * @param accessIp  访问者IP
      * @param userAgent 浏览器UA
      * @param referer   来源
      */
+    @SentinelResource(value = "mq-send-access-log",
+            blockHandler = "sendAccessLogBlockHandler")
     public void sendAccessLog(String shortCode, String accessIp, String userAgent, String referer) {
         try {
             String messageKey = UUID.randomUUID().toString();
@@ -132,6 +144,40 @@ public class AccessLogProducer {
         } catch (MQClientException | RemotingException | InterruptedException e) {
             messageTracer.traceSendFail(null, topic, e.getMessage(), -1, shortCode);
             log.error("Failed to send access log async: code={}", shortCode, e);
+        }
+    }
+
+    /**
+     * Sentinel 熔断 blockHandler：熔断期间直接走降级队列
+     * <p>
+     * 当 mq-send-access-log 资源的熔断器打开时，Sentinel 抛出 DegradeException，
+     * 本方法被回调，绕过 RocketMQ 发送直接写入 Redis 降级队列。
+     * 方法签名必须与原方法一致，仅末尾多一个 BlockException 参数。
+     *
+     * @param shortCode 短链码
+     * @param accessIp  访问者IP
+     * @param userAgent 浏览器UA
+     * @param referer   来源
+     * @param e         Sentinel 熔断异常
+     */
+    public void sendAccessLogBlockHandler(String shortCode, String accessIp,
+                                           String userAgent, String referer,
+                                           BlockException e) {
+        log.warn("MQ send circuit breaker open, writing to fallback queue directly: code={}", shortCode);
+        try {
+            String messageKey = UUID.randomUUID().toString();
+            Map<String, Object> message = new HashMap<>();
+            message.put("shortCode", shortCode);
+            message.put("accessIp", accessIp);
+            message.put("accessTime", LocalDateTime.now().toString());
+            message.put("messageKey", messageKey);
+            message.put("userAgent", userAgent);
+            message.put("referer", referer);
+
+            String payload = objectMapper.writeValueAsString(message);
+            fallbackToRedis(payload, 0);
+        } catch (JsonProcessingException ex) {
+            log.error("Failed to serialize fallback message in blockHandler: code={}", shortCode, ex);
         }
     }
 

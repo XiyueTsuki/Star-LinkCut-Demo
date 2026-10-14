@@ -1,5 +1,7 @@
 package com.xiyuetsuki.linkcutbackend.service.impl;
 
+import com.alibaba.csp.sentinel.annotation.SentinelResource;
+import com.alibaba.csp.sentinel.slots.block.BlockException;
 import com.xiyuetsuki.linkcutbackend.cache.LinkCacheManager;
 import com.xiyuetsuki.linkcutbackend.dto.CreateLinkRequest;
 import com.xiyuetsuki.linkcutbackend.dto.CreateLinkResponse;
@@ -28,6 +30,12 @@ import java.util.concurrent.TimeUnit;
  * 核心逻辑：
  * 1. 创建：Snowflake生成ID → Base62编码 → 冲突检测 → MySQL持久化 → Redis缓存 → 布隆过滤器
  * 2. 查询：布隆过滤器 → Redis缓存 → (分布式锁) → MySQL → 回写缓存
+ * <p>
+ * Sentinel 熔断保护：
+ * <ul>
+ *   <li>{@code db-create-short-link}  — DB 写入异常比例过高时熔断，返回错误提示</li>
+ *   <li>{@code db-query-short-link}   — DB 查询慢调用比例过高时熔断，返回 null</li>
+ * </ul>
  */
 @Service
 public class LinkCutServiceImpl implements LinkCutService {
@@ -56,7 +64,15 @@ public class LinkCutServiceImpl implements LinkCutService {
         this.linkCacheManager = linkCacheManager;
     }
 
+    /**
+     * 创建短链
+     * <p>
+     * Sentinel 熔断保护：当 DB 写入异常比例超过阈值时，
+     * 熔断器打开，由 {@link #createShortLinkBlockHandler} 返回错误响应。
+     */
     @Override
+    @SentinelResource(value = "db-create-short-link",
+            blockHandler = "createShortLinkBlockHandler")
     @Transactional(rollbackFor = Exception.class)
     public CreateLinkResponse createShortLink(CreateLinkRequest request, String creatorIp) {
         String originUrl = request.getOriginUrl();
@@ -94,23 +110,60 @@ public class LinkCutServiceImpl implements LinkCutService {
                 .build();
     }
 
+    /**
+     * Sentinel 熔断 blockHandler：DB 写入熔断时返回错误提示
+     * <p>
+     * 当 db-create-short-link 资源的熔断器打开时，
+     * 直接返回包含错误信息的 CreateLinkResponse，不执行 DB 操作。
+     */
+    public CreateLinkResponse createShortLinkBlockHandler(CreateLinkRequest request,
+                                                           String creatorIp,
+                                                           BlockException e) {
+        log.warn("DB write circuit breaker open, returning error: creatorIp={}", creatorIp);
+        return CreateLinkResponse.builder()
+                .shortCode(null)
+                .shortUrl(null)
+                .originUrl(request.getOriginUrl())
+                .expireTime(null)
+                .build();
+    }
+
     @Override
     public String getOriginUrl(String shortCode) {
+        // L1/L2 缓存命中直接返回，不触发 Sentinel 统计
         String originUrl = linkCacheManager.getOriginUrl(shortCode);
         if (originUrl != null) {
             log.debug("Cache hit (L1/L2): shortCode={}", shortCode);
             return originUrl;
         }
 
+        // 布隆过滤器判定不存在，直接返回 null
         if (!linkCacheManager.mightContain(shortCode)) {
             log.debug("BloomFilter miss: shortCode={}", shortCode);
             return null;
         }
 
+        // 缓存未命中，走 DB 查询（受 Sentinel 熔断保护）
+        return queryDbForShortLink(shortCode);
+    }
+
+    /**
+     * DB 查询短链（带分布式锁 + Sentinel 熔断保护）
+     * <p>
+     * 当 {@code db-query-short-link} 资源的慢调用比例超过阈值时，
+     * Sentinel 抛出 DegradeException，由 {@link #queryDbForShortLinkBlockHandler} 接管，
+     * 直接返回 null（即 404），避免 DB 被持续压垮。
+     * <p>
+     * 此方法从 {@link #getOriginUrl(String)} 中提取，确保缓存命中的请求
+     * 不受熔断影响，只有真正穿透到 DB 的请求才参与熔断统计。
+     */
+    @SentinelResource(value = "db-query-short-link",
+            blockHandler = "queryDbForShortLinkBlockHandler")
+    public String queryDbForShortLink(String shortCode) {
         log.debug("Cache miss, query DB with distributed lock: shortCode={}", shortCode);
         if (!linkCacheManager.tryLock(shortCode)) {
             log.warn("Failed to acquire distributed lock: shortCode={}", shortCode);
-            originUrl = linkCacheManager.getOriginUrl(shortCode);
+            String originUrl = linkCacheManager.getOriginUrl(shortCode);
             if (originUrl != null) {
                 return originUrl;
             }
@@ -118,9 +171,9 @@ public class LinkCutServiceImpl implements LinkCutService {
         }
 
         try {
-            originUrl = linkCacheManager.getOriginUrl(shortCode);
-            if (originUrl != null) {
-                return originUrl;
+            String cachedUrl = linkCacheManager.getOriginUrl(shortCode);
+            if (cachedUrl != null) {
+                return cachedUrl;
             }
 
             ShortLink shortLink = shortLinkRepository.findByShortCode(shortCode);
@@ -135,7 +188,7 @@ public class LinkCutServiceImpl implements LinkCutService {
                 return null;
             }
 
-            originUrl = shortLink.getOriginUrl();
+            String originUrl = shortLink.getOriginUrl();
             long ttlSeconds = calculateTtl(shortLink.getExpireTime());
             linkCacheManager.putShortLink(shortCode, originUrl, ttlSeconds);
             log.info("Cache loaded from DB: shortCode={}", shortCode);
@@ -143,6 +196,17 @@ public class LinkCutServiceImpl implements LinkCutService {
         } finally {
             linkCacheManager.unlock(shortCode);
         }
+    }
+
+    /**
+     * Sentinel 熔断 blockHandler：DB 查询熔断时返回 null
+     * <p>
+     * 当 db-query-short-link 熔断器打开时，直接返回 null，
+     * 上游 controller 将返回 404 给客户端。
+     */
+    public String queryDbForShortLinkBlockHandler(String shortCode, BlockException e) {
+        log.warn("DB query circuit breaker open, returning null: shortCode={}", shortCode);
+        return null;
     }
 
     /**
