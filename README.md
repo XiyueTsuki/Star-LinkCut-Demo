@@ -1,6 +1,6 @@
 # LinkCut - 高并发短链系统
 
-> 面向求职展示的高并发短链服务，系统性解决缓存穿透、击穿、雪崩三大经典问题，具备多实例缓存一致性、消息可靠性保障及全链路可观测性。
+> 面向求职展示的高并发短链服务，系统性解决缓存穿透、击穿、雪崩三大经典问题，具备多实例缓存一致性、消息可靠性保障、Redis Sentinel 高可用及 Prometheus + Grafana 全链路可观测性。
 
 ## 目录
 
@@ -8,6 +8,7 @@
 - [技术栈](#技术栈)
 - [架构设计](#架构设计)
   - [请求流转全链路](#请求流转全链路)
+  - [Redis Sentinel 高可用架构](#redis-sentinel-高可用架构)
   - [缓存策略全景](#缓存策略全景)
   - [限流体系](#限流体系)
 - [消息可靠性保障](#消息可靠性保障)
@@ -23,7 +24,7 @@
 
 ## 项目简介
 
-LinkCut 是一个高并发短链服务，采用 **Caffeine L1 本地缓存 + Redis L2 分布式缓存 + Redisson 布隆过滤器 + 分布式锁 + Sentinel 限流熔断 + RocketMQ 异步日志** 架构，完整覆盖了高并发场景下缓存的经典问题及多实例一致性，同时具备流控、熔断、消息降级、死信队列、积压监控等生产级可靠性设计。
+LinkCut 是一个高并发短链服务，采用 **Caffeine L1 本地缓存 + Redis L2 分布式缓存 + Redisson 布隆过滤器 + 分布式锁 + Sentinel 限流熔断 + RocketMQ 异步日志 + Prometheus + Grafana 监控** 架构，完整覆盖了高并发场景下缓存的经典问题及多实例一致性，同时具备流控、熔断、消息降级、死信队列、积压监控等生产级可靠性设计。
 
 | 维度 | 方案 |
 |------|------|
@@ -37,8 +38,10 @@ LinkCut 是一个高并发短链服务，采用 **Caffeine L1 本地缓存 + Red
 | 熔断 | Sentinel DegradeRule，MQ Producer / DB 查询 / DB 写入 3 个资源差异化熔断 |
 | 异步日志 | RocketMQ 5.3.0 原生客户端（零 Spring 依赖），异步发送 + 三级降级链 + DLQ 自动清理 + 消息轨迹 |
 | 访问计数 | RocketMQ 异步增量 → Consumer 批量合并 `access_count + N`，一次 UPDATE 替代 N 次 |
+| 高可用 | Redis Sentinel 1 主 1 从 3 哨兵，故障自动转移，Redisson 客户端读写分离 |
+| 可观测性 | Prometheus JVM 指标采集 + Grafana 可视化面板 |
 | 接口文档 | SpringDoc OpenAPI → `http://localhost:8080/docs.html` |
-| 联调环境 | MySQL 8.4 / Redis 8.2 / RocketMQ 5.3.0 全链路 Docker 部署 |
+| 联调环境 | MySQL 8.4 / Redis 8.2 Sentinel / RocketMQ 5.3.0 / Prometheus / Grafana 全链路 Docker 部署 |
 
 ---
 
@@ -50,15 +53,17 @@ LinkCut 是一个高并发短链服务，采用 **Caffeine L1 本地缓存 + Red
 | Java | 21 | 运行环境 |
 | MyBatis-Plus | 3.5.16 | ORM 持久化，`@TableLogic` 逻辑删除 |
 | MySQL | 8.4 | 短链数据与访问日志存储 |
-| Redis | 8.2 | 缓存层（Redisson 3.43） |
-| Redisson | 3.43.0 | 分布式锁 + RBloomFilter + RBucket + RTopic(Pub/Sub) |
+| Redis | 8.2 | 缓存层（Redisson 3.43，Sentinel 哨兵模式） |
+| Redisson | 3.43.0 | 分布式锁 + RBloomFilter + RBucket + RTopic(Pub/Sub) + Sentinel 客户端 |
 | RocketMQ | 5.3.0 | 异步访问日志采集（原生 `rocketmq-client`） |
 | Sentinel | 1.8.8 | 限流（FlowRule + ParamFlowRule）+ 熔断（DegradeRule） |
+| Prometheus | 2.54.0 | JVM 指标采集与存储 |
+| Grafana | 11.x | 指标可视化仪表盘 |
 | Guava | 33.4.0 | 基础工具（Base62 编解码等） |
 | Caffeine | 3.2.0 | L1 本地缓存 |
 | SpringDoc | 2.8.5 | OpenAPI 接口文档与在线调试（Swagger UI） |
 | Hutool | 5.8.34 | 通用工具库 |
-| Docker Compose | 3.3 | 容器编排（MySQL + Redis + RocketMQ） |
+| Docker Compose | - | 容器编排（11 个服务：MySQL + Redis Sentinel + RocketMQ + Prometheus + Grafana） |
 
 ---
 
@@ -131,6 +136,50 @@ LinkCut 是一个高并发短链服务，采用 **Caffeine L1 本地缓存 + Red
           │  扫描 DB status=1 → RENAME 原子切换        │
           └──────────────────────────────────────────┘
 ```
+
+### Redis Sentinel 高可用架构
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                    Redis Sentinel 集群                            │
+│                                                                 │
+│   ┌─────────────┐   ┌─────────────┐   ┌─────────────┐          │
+│   │ Sentinel-1  │   │ Sentinel-2  │   │ Sentinel-3  │          │
+│   │  :26379     │◄──┤  :26380     │◄──┤  :26381     │          │
+│   │  quorum=2   │   │             │   │             │          │
+│   └──────┬──────┘   └──────┬──────┘   └──────┬──────┘          │
+│          │                 │                 │                  │
+│          └─────────────────┼─────────────────┘                  │
+│                            │ 监控 mymaster                      │
+│                 ┌──────────▼──────────┐                         │
+│                 │   Redis Master      │                         │
+│                 │   :6379 (R/W)       │                         │
+│                 └──────────┬──────────┘                         │
+│                            │ 异步复制                           │
+│                 ┌──────────▼──────────┐                         │
+│                 │   Redis Slave       │                         │
+│                 │   :6380 (ReadOnly)  │                         │
+│                 └─────────────────────┘                         │
+│                                                                 │
+│   Redisson Client (Spring Boot)                                 │
+│   ┌─────────────────────────────────────────────┐              │
+│   │ readMode = MASTER_SLAVE                      │              │
+│   │ 写 → Master  :6379                           │              │
+│   │ 读 → Slave   :6380                           │              │
+│   │ 故障转移 → Sentinel 自动发现新 Master          │              │
+│   └─────────────────────────────────────────────┘              │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+| 组件 | 端口 | 角色 |
+|------|------|------|
+| redis-master | 6379 | 主节点，处理读写 |
+| redis-slave | 6380 | 从节点，只读副本 |
+| sentinel-1 | 26379 | 哨兵，监控主节点健康 |
+| sentinel-2 | 26380 | 哨兵，参与 quorum 投票 |
+| sentinel-3 | 26381 | 哨兵，参与 quorum 投票 |
+
+**故障转移流程：** 3 个 Sentinel 以 quorum=2 监控主节点。当 2 个 Sentinel 判定主节点下线（down-after-milliseconds=5000），自动将 Slave 提升为新 Master，Redisson 客户端无感知切换。
 
 ### 缓存策略全景
 
@@ -295,7 +344,7 @@ Star-LinkCut-Demo/
 │   │   ├── config/
 │   │   │   ├── BloomFilterConfig.java        # RBloomFilter 初始化 + 启动加载
 │   │   │   ├── OpenApiConfig.java            # SpringDoc OpenAPI 配置
-│   │   │   ├── RedissonConfig.java           # Redisson 客户端配置
+│   │   │   ├── RedissonConfig.java           # Redisson Sentinel 哨兵客户端配置
 │   │   │   ├── RocketMQConfig.java           # RocketMQ Producer/Consumer 配置
 │   │   │   └── SentinelConfig.java           # Sentinel 初始化 + FlowRule/ParamFlowRule/DegradeRule
 │   │   ├── controller/
@@ -342,18 +391,29 @@ Star-LinkCut-Demo/
 │   │       └── impl/
 │   │           └── LinkCutServiceImpl.java   # 业务逻辑实现（创建/跳转/详情/统计/删除/延期）
 │   └── src/main/resources/
-│       ├── application.yml                   # 主配置（MySQL/Redis/RocketMQ/Snowflake/Bloom）
+│       ├── application.yml                   # 主配置（MySQL/Redis Sentinel/RocketMQ/Snowflake/Bloom/Actuator）
 │       ├── application-dev.yml               # dev 环境配置（限流 + 日志）
 │       └── application-test.yml              # test 环境配置（≈关闭限流 + 减少日志）
-├── docker/                                  # Docker 容器编排
-│   ├── docker-compose.yml                   # MySQL 8.4 + Redis 8.2 + RocketMQ 5.3.0
+├── docker/                                  # Docker 容器编排（可直接复制到 /XiyueTsuki-Star-LinkCut-Demo/）
+│   ├── check.sh                             # 一键验证脚本
+│   ├── docker-compose.yml                   # 11 个服务：MySQL + Redis Sentinel(5容器) + RocketMQ(3容器) + Prometheus + Grafana
 │   ├── MySQL-8.4/
 │   │   ├── conf/my.cnf                      # InnoDB 512M / 慢查询 2s
 │   │   └── init.sql                         # 建库建表脚本
 │   ├── Redis-8.2/
-│   │   └── conf/redis.conf                  # AOF + RDB + allkeys-lru / 512MB
-│   └── RocketMQ-5.3.0/
-│       └── broker.conf                      # ASYNC_MASTER / 自动创建 Topic
+│   │   ├── conf/
+│   │   │   ├── redis.conf                   # Master: AOF + RDB + allkeys-lru / 512MB
+│   │   │   ├── redis-slave.conf             # Slave 基础配置
+│   │   │   └── sentinel.conf                # Sentinel 共享配置（monitor/auth-pass 由 entrypoint 动态注入）
+│   │   ├── sentinel-entrypoint.sh           # Sentinel 启动脚本（注入外部 IP 宣告）
+│   │   └── slave-entrypoint.sh              # Slave 启动脚本（注入主节点 IP + 自身宣告）
+│   ├── RocketMQ-5.3.0/
+│   │   └── broker.conf                      # ASYNC_MASTER / 自动创建 Topic
+│   ├── Prometheus/
+│   │   └── prometheus.yml                   # Prometheus 抓取配置（linkcut-backend JVM 指标）
+│   └── Grafana/
+│       └── datasources/
+│           └── datasource.yml               # Grafana 自动加载 Prometheus 数据源
 ├── jmeter/                                  # 压力测试
 │   ├── LinkCut压测.jmx
 │   └── redirect_codes.csv
@@ -403,41 +463,73 @@ Star-LinkCut-Demo/
 
 ## 快速开始
 
-### 1. 启动 Docker 容器
+### 1. 复制文件到虚拟机
 
-将 `docker/` 目录复制到虚拟机 `/XiyueTsuki-Star-LinkCut-Demo/`，创建必要目录并启动：
+将 `docker/` 目录完整复制到虚拟机 `/XiyueTsuki-Star-LinkCut-Demo/`：
 
 ```bash
-mkdir -p /XiyueTsuki-Star-LinkCut-Demo/{MySQL-8.4/data,Redis-8.2/data,RocketMQ-5.3.0/{namesrv/logs,broker/{logs,store}}}
+mkdir -p /XiyueTsuki-Star-LinkCut-Demo
+# 将 docker/ 目录下所有文件复制到此路径
+```
+
+### 2. 启动所有容器
+
+```bash
 cd /XiyueTsuki-Star-LinkCut-Demo
 docker compose up -d
 ```
 
-验证容器状态：
+等待约 30 秒所有容器就绪后，运行验证脚本：
 
 ```bash
-docker ps
-# linkcut-mysql-8.4          → 3306   (MySQL 8.4)
-# linkcut-redis-8.2           → 6379   (Redis 8.2)
-# linkcut-rmq-namesrv-5.3.0   → 9876   (RocketMQ Name Server)
-# linkcut-rmq-broker-5.3.0    → 10911  (RocketMQ Broker)
-# linkcut-rmq-dashboard        → 4003   (RocketMQ Dashboard)
+chmod +x check.sh
+./check.sh
 ```
 
-> 可访问 `http://<虚拟机IP>:4003` 打开 RocketMQ Dashboard 查看消息投递情况，包含 `linkcut_access_log` 和 `linkcut_access_incr` 两个 Topic。
+预期输出：
 
-### 2. 配置后端连接
+```
+=== 容器状态 ===
+linkcut-redis-master        Up X minutes (healthy)
+linkcut-sentinel-1          Up X minutes
+linkcut-sentinel-2          Up X minutes
+linkcut-sentinel-3          Up X minutes
+linkcut-redis-slave         Up X minutes
+linkcut-prometheus          Up X minutes
+linkcut-grafana             Up X minutes
+linkcut-mysql-8.4           Up X minutes
+linkcut-rmq-namesrv-5.3.0   Up X minutes
+linkcut-rmq-broker-5.3.0    Up X minutes
+linkcut-rmq-dashboard       Up X minutes
 
-编辑 `LinkCut-Backend/src/main/resources/application.yml` 第 3 行，改为虚拟机实际 IP：
+=== Redis Sentinel 主节点 ===
+192.168.100.128
+6379
+
+=== Redis 主从复制 ===
+connected_slaves:1
+
+=== Prometheus Targets ===
+  linkcut-backend: up
+
+=== Grafana ===
+  HTTP 200
+
+=== 验证完成 ===
+```
+
+### 3. 修改 Spring Boot 配置
+
+编辑 `LinkCut-Backend/src/main/resources/application.yml`：
 
 ```yaml
 app:
   host: 192.168.100.128    # ← 改成你的虚拟机 IP
 ```
 
-> **注意**：`docker/RocketMQ-5.3.0/broker.conf` 第 17 行的 `brokerIP1` 也需要同步修改为虚拟机 IP，否则 Broker 注册到 Name Server 的地址将是容器内部 IP，导致客户端连接失败。
+> **注意**：`docker/RocketMQ-5.3.0/broker.conf` 第 17 行的 `brokerIP1` 和 `docker/Prometheus/prometheus.yml` 中的 `targets` IP 也需要同步修改为虚拟机/宿主机实际 IP。
 
-### 3. 启动后端
+### 4. 启动后端
 
 ```bash
 cd LinkCut-Backend
@@ -446,8 +538,19 @@ mvn spring-boot:run
 
 启动成功后可访问：
 
-- **接口文档**：http://localhost:8080/docs.html
-- **RocketMQ Dashboard**：http://<虚拟机IP>:4003
+| 服务 | 地址 |
+|------|------|
+| 接口文档 (Swagger UI) | http://localhost:8080/docs.html |
+| Prometheus | http://<虚拟机IP>:9090 |
+| Grafana | http://<虚拟机IP>:3000 (admin/admin) |
+| RocketMQ Dashboard | http://<虚拟机IP>:4003 |
+
+### 5. Grafana 配置（首次使用）
+
+1. 浏览器打开 http://<虚拟机IP>:3000，默认账号 `admin/admin`
+2. 左侧菜单 → **Dashboards** → **New** → **Import**
+3. 导入 JVM 监控面板 ID：`4701`（Micrometer JVM Dashboard）
+4. 数据源选择 `Prometheus`，点击 Import
 
 ---
 
@@ -625,7 +728,7 @@ spring:
 
 | 配置项 | 位置 | 默认值 | 说明 |
 |--------|------|--------|------|
-| `app.host` | application.yml | `192.168.100.128` | Docker 宿主机 IP |
+| `app.host` | application.yml | `192.168.100.128` | Docker 宿主机 IP（虚拟机外部 IP） |
 | `linkcut.domain` | application.yml / dev | `http://<ip>:8080` | 对外展示的短链域名 |
 | `linkcut.snowflake.worker-id` | application.yml | `1` | 分布式实例需互不相同 |
 | `linkcut.snowflake.datacenter-id` | application.yml | `1` | 数据中心 ID |
@@ -634,6 +737,8 @@ spring:
 | `linkcut.bloom-filter.rebuild-cron` | application.yml | `0 0 3 * * ?` | 重建 Cron 表达式 |
 | `linkcut.caffeine.max-size` | application.yml | `10000` | L1 缓存最大条目数 |
 | `linkcut.caffeine.expire-minutes` | application.yml | `5` | L1 缓存 TTL（分钟）|
+| `redisson.sentinel-config.sentinel-addresses` | application.yml | `redis://<ip>:26379,...` | Sentinel 节点地址（逗号分隔） |
+| `redisson.sentinel-config.master-name` | application.yml | `mymaster` | Sentinel 主节点名称 |
 | `rocketmq.fallback.max-retries` | application.yml | `3` | 降级队列最大重试次数 |
 | `rocketmq.fallback.dlq-max-size` | application.yml | `5000` | DLQ 最大容量（超出 FIFO 删头）|
 | `rocketmq.fallback.dlq-retain-hours` | application.yml | `72` | DLQ 消息最长保留小时数 |
@@ -647,11 +752,16 @@ spring:
 |------|------|---------|
 | Spring Boot 应用 | 8080 | http://localhost:8080 |
 | MySQL | 3306 | 虚拟机 IP |
-| Redis | 6379 | 虚拟机 IP（密码: redis123）|
+| Redis Master | 6379 | 虚拟机 IP（密码: redis123） |
+| Redis Slave | 6380 | 虚拟机 IP（密码: redis123） |
+| Sentinel-1/2/3 | 26379/26380/26381 | 虚拟机 IP |
 | RocketMQ Name Server | 9876 | 虚拟机 IP |
 | RocketMQ Broker | 10911 | 虚拟机 IP |
 | RocketMQ Dashboard | 4003 | http://<虚拟机IP>:4003 |
+| Prometheus | 9090 | http://<虚拟机IP>:9090 |
+| Grafana | 3000 | http://<虚拟机IP>:3000 (admin/admin) |
 | SpringDoc OpenAPI | 8080 | http://localhost:8080/docs.html |
+| Actuator Prometheus | 8080 | http://localhost:8080/actuator/prometheus |
 
 ---
 

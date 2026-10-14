@@ -54,17 +54,17 @@ mybatis-plus:
 
 # ==================== Redisson 3.43 独立配置 ====================
 redisson:
-  single-server-config:
-    address: redis://${app.host}:6379
+  sentinel-config:
+    sentinel-addresses: redis://${app.host}:26379,redis://${app.host}:26380,redis://${app.host}:26381
+    master-name: mymaster
     password: redis123
+    database: 0
     connection-pool-size: 64
     connection-minimum-idle-size: 16
     idle-connection-timeout: 30000
     timeout: 10000
     retry-attempts: 1
     retry-interval: 1500
-    subscription-connection-pool-size: 16
-    subscription-connection-minimum-idle-size: 1
 
 # ==================== RocketMQ 配置 (原生客户端) ====================
 rocketmq:
@@ -133,6 +133,19 @@ linkcut:
   caffeine:
     max-size: 10000
     expire-minutes: 5
+
+# ==================== Actuator + Prometheus 指标暴露 ====================
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus,metrics
+  metrics:
+    export:
+      prometheus:
+        enabled: true
+    tags:
+      application: ${spring.application.name}
 
 # ==================== SpringDoc OpenAPI 配置 ====================
 springdoc:

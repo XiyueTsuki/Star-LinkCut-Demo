@@ -1,5 +1,3 @@
-version: '3.3'
-
 services:
   mysql:
     image: mysql:8.4
@@ -19,16 +17,113 @@ services:
     networks:
       - linkcut
 
-  redis:
+  # ==================== Redis Sentinel 高可用 ====================
+
+  redis-master:
     image: redis:8.2
-    container_name: linkcut-redis-8.2
+    container_name: linkcut-redis-master
     restart: unless-stopped
     ports:
       - "6379:6379"
     command: redis-server /usr/local/etc/redis/redis.conf
     volumes:
-      - /XiyueTsuki-Star-LinkCut-Demo/Redis-8.2/data:/data
-      - /XiyueTsuki-Star-LinkCut-Demo/Redis-8.2/conf:/usr/local/etc/redis
+      - /XiyueTsuki-Star-LinkCut-Demo/Redis-8.2/master-data:/data
+      - /XiyueTsuki-Star-LinkCut-Demo/Redis-8.2/conf/redis.conf:/usr/local/etc/redis/redis.conf
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "redis123", "ping"]
+      interval: 2s
+      timeout: 3s
+      retries: 5
+    networks:
+      - linkcut
+
+  redis-slave:
+    image: redis:8.2
+    container_name: linkcut-redis-slave
+    restart: unless-stopped
+    ports:
+      - "6380:6380"
+    environment:
+      - MASTER_EXTERNAL_IP=192.168.100.128
+      - ANNOUNCE_IP=192.168.100.128
+      - ANNOUNCE_PORT=6380
+    entrypoint: ["sh", "/usr/local/etc/redis/slave-entrypoint.sh"]
+    volumes:
+      - /XiyueTsuki-Star-LinkCut-Demo/Redis-8.2/slave-data:/data
+      - /XiyueTsuki-Star-LinkCut-Demo/Redis-8.2/conf/redis-slave.conf:/usr/local/etc/redis/redis-slave.conf
+      - /XiyueTsuki-Star-LinkCut-Demo/Redis-8.2/slave-entrypoint.sh:/usr/local/etc/redis/slave-entrypoint.sh
+    depends_on:
+      redis-master:
+        condition: service_healthy
+    networks:
+      - linkcut
+
+  sentinel-1:
+    image: redis:8.2
+    container_name: linkcut-sentinel-1
+    restart: unless-stopped
+    ports:
+      - "26379:26379"
+    environment:
+      - MASTER_EXTERNAL_IP=192.168.100.128
+      - ANNOUNCE_IP=192.168.100.128
+      - ANNOUNCE_PORT=26379
+    entrypoint: ["sh", "/usr/local/etc/redis/sentinel-entrypoint.sh"]
+    volumes:
+      - /XiyueTsuki-Star-LinkCut-Demo/Redis-8.2/conf/sentinel.conf:/usr/local/etc/redis/sentinel.conf
+      - /XiyueTsuki-Star-LinkCut-Demo/Redis-8.2/sentinel-1-data:/data
+      - /XiyueTsuki-Star-LinkCut-Demo/Redis-8.2/sentinel-entrypoint.sh:/usr/local/etc/redis/sentinel-entrypoint.sh
+    depends_on:
+      redis-master:
+        condition: service_healthy
+      redis-slave:
+        condition: service_started
+    networks:
+      - linkcut
+
+  sentinel-2:
+    image: redis:8.2
+    container_name: linkcut-sentinel-2
+    restart: unless-stopped
+    ports:
+      - "26380:26379"
+    environment:
+      - MASTER_EXTERNAL_IP=192.168.100.128
+      - ANNOUNCE_IP=192.168.100.128
+      - ANNOUNCE_PORT=26380
+    entrypoint: ["sh", "/usr/local/etc/redis/sentinel-entrypoint.sh"]
+    volumes:
+      - /XiyueTsuki-Star-LinkCut-Demo/Redis-8.2/conf/sentinel.conf:/usr/local/etc/redis/sentinel.conf
+      - /XiyueTsuki-Star-LinkCut-Demo/Redis-8.2/sentinel-2-data:/data
+      - /XiyueTsuki-Star-LinkCut-Demo/Redis-8.2/sentinel-entrypoint.sh:/usr/local/etc/redis/sentinel-entrypoint.sh
+    depends_on:
+      redis-master:
+        condition: service_healthy
+      redis-slave:
+        condition: service_started
+    networks:
+      - linkcut
+
+  sentinel-3:
+    image: redis:8.2
+    container_name: linkcut-sentinel-3
+    restart: unless-stopped
+    ports:
+      - "26381:26379"
+    environment:
+      - MASTER_EXTERNAL_IP=192.168.100.128
+      - ANNOUNCE_IP=192.168.100.128
+      - ANNOUNCE_PORT=26381
+    entrypoint: ["sh", "/usr/local/etc/redis/sentinel-entrypoint.sh"]
+    volumes:
+      - /XiyueTsuki-Star-LinkCut-Demo/Redis-8.2/conf/sentinel.conf:/usr/local/etc/redis/sentinel.conf
+      - /XiyueTsuki-Star-LinkCut-Demo/Redis-8.2/sentinel-3-data:/data
+      - /XiyueTsuki-Star-LinkCut-Demo/Redis-8.2/sentinel-entrypoint.sh:/usr/local/etc/redis/sentinel-entrypoint.sh
+    depends_on:
+      redis-master:
+        condition: service_healthy
+      redis-slave:
+        condition: service_started
     networks:
       - linkcut
 
@@ -77,6 +172,43 @@ services:
       JAVA_OPTS: "-Drocketmq.namesrv.addr=rocketmq-namesrv:9876 -Dcom.rocketmq.sendMessageWithVIPChannel=false"
     depends_on:
       - rocketmq-namesrv
+    networks:
+      - linkcut
+
+  # ==================== Prometheus + Grafana 监控 ====================
+
+  prometheus:
+    image: prom/prometheus:v2.54.0
+    container_name: linkcut-prometheus
+    restart: unless-stopped
+    user: root
+    ports:
+      - "9090:9090"
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=7d'
+    volumes:
+      - /XiyueTsuki-Star-LinkCut-Demo/Prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+      - /XiyueTsuki-Star-LinkCut-Demo/Prometheus/data:/prometheus
+    networks:
+      - linkcut
+
+  grafana:
+    image: grafana/grafana:11.2.0
+    container_name: linkcut-grafana
+    restart: unless-stopped
+    user: root
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+    volumes:
+      - /XiyueTsuki-Star-LinkCut-Demo/Grafana/data:/var/lib/grafana
+      - /XiyueTsuki-Star-LinkCut-Demo/Grafana/datasources:/etc/grafana/provisioning/datasources
+    depends_on:
+      - prometheus
     networks:
       - linkcut
 
