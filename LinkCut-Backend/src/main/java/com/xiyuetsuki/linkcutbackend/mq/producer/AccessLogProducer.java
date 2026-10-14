@@ -2,6 +2,8 @@ package com.xiyuetsuki.linkcutbackend.mq.producer;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.xiyuetsuki.linkcutbackend.mq.MessagePersistenceHelper;
+import com.xiyuetsuki.linkcutbackend.mq.MessageTracer;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.rocketmq.client.exception.MQClientException;
 import org.apache.rocketmq.client.producer.DefaultMQProducer;
@@ -9,7 +11,6 @@ import org.apache.rocketmq.client.producer.SendCallback;
 import org.apache.rocketmq.client.producer.SendResult;
 import org.apache.rocketmq.common.message.Message;
 import org.apache.rocketmq.remoting.exception.RemotingException;
-import org.redisson.api.RList;
 import org.redisson.api.RQueue;
 import org.redisson.api.RedissonClient;
 import org.springframework.beans.factory.annotation.Value;
@@ -57,13 +58,19 @@ public class AccessLogProducer {
     private final DefaultMQProducer producer;
     private final ObjectMapper objectMapper;
     private final RedissonClient redissonClient;
+    private final MessagePersistenceHelper persistenceHelper;
+    private final MessageTracer messageTracer;
 
     public AccessLogProducer(DefaultMQProducer producer,
                              ObjectMapper objectMapper,
-                             RedissonClient redissonClient) {
+                             RedissonClient redissonClient,
+                             MessagePersistenceHelper persistenceHelper,
+                             MessageTracer messageTracer) {
         this.producer = producer;
         this.objectMapper = objectMapper;
         this.redissonClient = redissonClient;
+        this.persistenceHelper = persistenceHelper;
+        this.messageTracer = messageTracer;
     }
 
     /**
@@ -94,21 +101,36 @@ public class AccessLogProducer {
             String payload = objectMapper.writeValueAsString(message);
             Message msg = new Message(topic, tag, payload.getBytes(StandardCharsets.UTF_8));
 
+            // 记录发送开始时间，用于在回调中计算耗时
+            long sendStartMs = System.currentTimeMillis();
+            final String traceShortCode = shortCode;
+            final String traceMessageKey = messageKey;
+            final String tracePayload = payload;
+
             producer.send(msg, new SendCallback() {
                 @Override
                 public void onSuccess(SendResult sendResult) {
-                    log.debug("Access log sent: code={}, msgId={}", shortCode, sendResult.getMsgId());
+                    long costMs = System.currentTimeMillis() - sendStartMs;
+                    messageTracer.traceSendSuccess(traceMessageKey, topic,
+                            sendResult.getMsgId(), costMs, traceShortCode);
+                    log.debug("Access log sent: code={}, msgId={}, costMs={}",
+                            traceShortCode, sendResult.getMsgId(), costMs);
                 }
 
                 @Override
                 public void onException(Throwable e) {
-                    log.error("Failed to send access log, fallback to Redis: code={}", shortCode, e);
-                    fallbackToRedis(payload, 0);
+                    long costMs = System.currentTimeMillis() - sendStartMs;
+                    messageTracer.traceSendFail(traceMessageKey, topic,
+                            e.getMessage(), costMs, traceShortCode);
+                    log.error("Failed to send access log, fallback to Redis: code={}", traceShortCode, e);
+                    fallbackToRedis(tracePayload, 0);
                 }
             });
         } catch (JsonProcessingException e) {
+            messageTracer.traceSerializeFail(shortCode, e.getMessage());
             log.error("Failed to serialize access log: code={}", shortCode, e);
         } catch (MQClientException | RemotingException | InterruptedException e) {
+            messageTracer.traceSendFail(null, topic, e.getMessage(), -1, shortCode);
             log.error("Failed to send access log async: code={}", shortCode, e);
         }
     }
@@ -126,7 +148,7 @@ public class AccessLogProducer {
     }
 
     /**
-     * 降级写入 Redis 待重试队列
+     * 降级写入 Redis 待重试队列（三级降级链：Redis → 重试 → 本地文件）
      *
      * @param payload 消息 JSON
      * @param retries 已重试次数
@@ -142,10 +164,14 @@ public class AccessLogProducer {
             envelope.put("payload", payload);
             envelope.put("retries", retries);
             envelope.put("createTime", System.currentTimeMillis());
-            fallbackQueue.add(objectMapper.writeValueAsString(envelope));
-            log.debug("Message saved to fallback queue: retries={}, queueSize={}", retries, fallbackQueue.size());
-        } catch (Exception e) {
-            log.error("Failed to write fallback queue, message permanently lost", e);
+            String envelopeJson = objectMapper.writeValueAsString(envelope);
+            boolean ok = persistenceHelper.safeWriteQueue(fallbackQueueKey, envelopeJson,
+                    maxQueueSize, "fallback-queue");
+            if (!ok) {
+                log.error("Fallback queue persistence failed at all levels, message permanently lost");
+            }
+        } catch (JsonProcessingException e) {
+            log.error("Failed to serialize fallback envelope, message discarded", e);
         }
     }
 
@@ -208,19 +234,23 @@ public class AccessLogProducer {
     }
 
     /**
-     * 超过最大重试次数，移入死信队列
+     * 超过最大重试次数，移入死信队列（三级降级链：Redis → 重试 → 本地文件）
      */
     private void moveToDlq(String payload, int retries) {
+        Map<String, Object> dlqEntry = new HashMap<>();
+        dlqEntry.put("payload", payload);
+        dlqEntry.put("retries", retries);
+        dlqEntry.put("moveTime", System.currentTimeMillis());
         try {
-            RList<String> dlq = redissonClient.getList(dlqKey);
-            Map<String, Object> dlqEntry = new HashMap<>();
-            dlqEntry.put("payload", payload);
-            dlqEntry.put("retries", retries);
-            dlqEntry.put("moveTime", System.currentTimeMillis());
-            dlq.add(objectMapper.writeValueAsString(dlqEntry));
-            log.error("Message moved to DLQ after {} retries", retries);
-        } catch (Exception e) {
-            log.error("Failed to write DLQ, message permanently lost", e);
+            String envelopeJson = objectMapper.writeValueAsString(dlqEntry);
+            boolean ok = persistenceHelper.safeWriteList(dlqKey, envelopeJson, "dlq");
+            if (ok) {
+                log.error("Message moved to DLQ after {} retries", retries);
+            } else {
+                log.error("DLQ persistence failed at all levels, message permanently lost");
+            }
+        } catch (JsonProcessingException e) {
+            log.error("Failed to serialize DLQ entry, message discarded", e);
         }
     }
 }

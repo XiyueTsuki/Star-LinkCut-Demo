@@ -5,11 +5,11 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.xiyuetsuki.linkcutbackend.config.RocketMQConfig;
 import com.xiyuetsuki.linkcutbackend.entity.AccessLog;
+import com.xiyuetsuki.linkcutbackend.mq.MessagePersistenceHelper;
+import com.xiyuetsuki.linkcutbackend.mq.MessageTracer;
 import com.xiyuetsuki.linkcutbackend.repository.AccessLogRepository;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.rocketmq.common.message.MessageExt;
-import org.redisson.api.RList;
-import org.redisson.api.RedissonClient;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.dao.DataAccessException;
 import org.springframework.stereotype.Component;
@@ -37,17 +37,20 @@ public class AccessLogConsumer {
 
     private final AccessLogRepository accessLogRepository;
     private final ObjectMapper objectMapper;
-    private final RedissonClient redissonClient;
+    private final MessagePersistenceHelper persistenceHelper;
+    private final MessageTracer messageTracer;
 
     @Value("${rocketmq.fallback.dlq-key}")
     private String dlqKey;
 
     public AccessLogConsumer(AccessLogRepository accessLogRepository,
                              ObjectMapper objectMapper,
-                             RedissonClient redissonClient) {
+                             MessagePersistenceHelper persistenceHelper,
+                             MessageTracer messageTracer) {
         this.accessLogRepository = accessLogRepository;
         this.objectMapper = objectMapper;
-        this.redissonClient = redissonClient;
+        this.persistenceHelper = persistenceHelper;
+        this.messageTracer = messageTracer;
     }
 
     /**
@@ -55,25 +58,37 @@ public class AccessLogConsumer {
      * <p>
      * 由 RocketMQ 原生 MessageListenerConcurrently 回调，
      * msgs 已是批量拉取的结果（batchMaxSize 条）。
+     * <p>
+     * 每条消息记录 RECEIVED 轨迹（含端到端延迟），整批完成后记录 HANDLE_BATCH 汇总轨迹。
      */
     public void handleBatch(List<MessageExt> msgs) {
-        List<AccessLog> batch = new ArrayList<>(msgs.size());
+        long batchStartMs = System.currentTimeMillis();
+        int totalMsgs = msgs.size();
+        List<AccessLog> batch = new ArrayList<>(totalMsgs);
+        int successCount = 0;
 
         for (MessageExt msg : msgs) {
             AccessLog accessLog = parseMessage(msg);
             if (accessLog != null) {
                 batch.add(accessLog);
+                successCount++;
+                // 记录每条消息的端到端延迟
+                long delayMs = System.currentTimeMillis() - msg.getBornTimestamp();
+                messageTracer.traceReceived(accessLog.getMessageKey(), msg.getMsgId(), delayMs);
             }
         }
 
+        int failCount = totalMsgs - successCount;
         if (batch.isEmpty()) {
-            log.debug("Batch all invalid, skipped, size={}", msgs.size());
+            log.debug("Batch all invalid, skipped, size={}", totalMsgs);
+            messageTracer.traceHandleBatch(totalMsgs, 0, failCount,
+                    System.currentTimeMillis() - batchStartMs);
             return;
         }
 
         try {
             accessLogRepository.insertIgnoreBatch(batch);
-            log.debug("Batch saved: msgs={}, success={}", msgs.size(), batch.size());
+            log.debug("Batch saved: msgs={}, success={}", totalMsgs, successCount);
         } catch (DataAccessException e) {
             log.error("Batch insert failed (size={}), attempting individual fallback", batch.size(), e);
             for (AccessLog item : batch) {
@@ -84,6 +99,9 @@ public class AccessLogConsumer {
                 }
             }
         }
+
+        long totalCost = System.currentTimeMillis() - batchStartMs;
+        messageTracer.traceHandleBatch(totalMsgs, successCount, failCount, totalCost);
     }
 
     /**
@@ -96,6 +114,7 @@ public class AccessLogConsumer {
             map = objectMapper.readValue(body, new TypeReference<Map<String, Object>>() {});
         } catch (JsonProcessingException e) {
             log.error("Failed to deserialize message, moved to DLQ: msgId={}", msg.getMsgId(), e);
+            messageTracer.traceHandleFail(msg.getMsgId(), "Deserialize: " + e.getMessage());
             moveToDlq(body, e.getClass().getSimpleName() + ": " + e.getMessage());
             return null;
         }
@@ -124,24 +143,28 @@ public class AccessLogConsumer {
                     .build();
         } catch (IllegalArgumentException e) {
             log.error("Invalid message data, moved to DLQ: msgId={}", msg.getMsgId(), e);
+            messageTracer.traceHandleFail(msg.getMsgId(), "Validate: " + e.getMessage());
             moveToDlq(body, e.getClass().getSimpleName() + ": " + e.getMessage());
             return null;
         }
     }
 
     /**
-     * 写入 Redis 死信队列，用于后续人工排查
+     * 写入 Redis 死信队列（三级降级链：Redis → 重试 → 本地文件）
      */
     private void moveToDlq(String originalMessage, String errorReason) {
+        Map<String, Object> dlqEntry = new HashMap<>();
+        dlqEntry.put("message", originalMessage);
+        dlqEntry.put("error", errorReason);
+        dlqEntry.put("time", System.currentTimeMillis());
         try {
-            RList<String> dlq = redissonClient.getList(dlqKey);
-            Map<String, Object> dlqEntry = new HashMap<>();
-            dlqEntry.put("message", originalMessage);
-            dlqEntry.put("error", errorReason);
-            dlqEntry.put("time", System.currentTimeMillis());
-            dlq.add(objectMapper.writeValueAsString(dlqEntry));
-        } catch (Exception e) {
-            log.error("Failed to write DLQ, message permanently lost", e);
+            String payload = objectMapper.writeValueAsString(dlqEntry);
+            boolean ok = persistenceHelper.safeWriteList(dlqKey, payload, "dlq");
+            if (!ok) {
+                log.error("DLQ persistence failed at all levels, message permanently lost");
+            }
+        } catch (JsonProcessingException e) {
+            log.error("Failed to serialize DLQ entry, message discarded", e);
         }
     }
 }

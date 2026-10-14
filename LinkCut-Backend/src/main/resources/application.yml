@@ -81,6 +81,10 @@ rocketmq:
   access-log:
     topic: linkcut_access_log
     tag: access
+  access-incr:
+    consumer-group: linkcut-incr-consumer-group
+    topic: linkcut_access_incr
+    tag: incr
   fallback:
     queue-key: linkcut:mq:fallback:access_log
     dlq-key: linkcut:mq:dlq:access_log
@@ -89,6 +93,13 @@ rocketmq:
     retry-interval-ms: 30000
     backlog-warn-threshold: 0.8
     monitor-interval-ms: 60000
+    dlq-max-size: 5000
+    dlq-retain-hours: 72
+    dlq-cleanup-interval-ms: 3600000
+    dlq-write-retries: 3
+    dlq-write-retry-interval-ms: 500
+    local-fallback-dir: logs
+    local-fallback-max-size-mb: 100
 
 # ==================== Snowflake 配置 ====================
 linkcut:

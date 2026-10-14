@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import com.xiyuetsuki.linkcutbackend.mq.consumer.AccessLogConsumer;
+import com.xiyuetsuki.linkcutbackend.mq.consumer.IncrementConsumer;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.rocketmq.client.consumer.DefaultMQPushConsumer;
 import org.apache.rocketmq.client.consumer.listener.ConsumeConcurrentlyStatus;
@@ -58,6 +59,15 @@ public class RocketMQConfig {
     @Value("${rocketmq.access-log.tag}")
     private String tag;
 
+    @Value("${rocketmq.access-incr.consumer-group}")
+    private String incrConsumerGroup;
+
+    @Value("${rocketmq.access-incr.topic}")
+    private String incrTopic;
+
+    @Value("${rocketmq.access-incr.tag}")
+    private String incrTag;
+
     @Bean
     public ObjectMapper objectMapper() {
         ObjectMapper mapper = new ObjectMapper();
@@ -94,6 +104,35 @@ public class RocketMQConfig {
 
         log.info("RocketMQ Consumer started: group={}, batchMaxSize={}, threadMax={}",
                 consumerGroup, batchMaxSize, consumeThreadMax);
+        return consumer;
+    }
+
+    /**
+     * 访问计数增量 Consumer
+     * <p>
+     * 独立的 ConsumerGroup 和 Topic（{@code linkcut_access_incr}），
+     * 与访问日志 Consumer 隔离，避免互相影响消费进度。
+     * <p>
+     * 线程数和批量大小沿用主 Consumer 配置，增量消息极小（~100 字节），压力可控。
+     */
+    @Bean(initMethod = "start", destroyMethod = "shutdown")
+    public DefaultMQPushConsumer incrPushConsumer(IncrementConsumer incrementConsumer) throws MQClientException {
+        DefaultMQPushConsumer consumer = new DefaultMQPushConsumer(incrConsumerGroup);
+        consumer.setNamesrvAddr(nameServer);
+        consumer.setConsumeFromWhere(ConsumeFromWhere.CONSUME_FROM_LAST_OFFSET);
+        consumer.setConsumeThreadMax(Math.max(4, consumeThreadMax / 2));
+        consumer.setConsumeThreadMin(Math.max(2, consumeThreadMax / 4));
+        consumer.setConsumeMessageBatchMaxSize(batchMaxSize);
+        consumer.setMaxReconsumeTimes(maxReconsumeTimes);
+        consumer.subscribe(incrTopic, incrTag);
+
+        consumer.registerMessageListener((MessageListenerConcurrently) (msgs, context) -> {
+            incrementConsumer.handleBatch(msgs);
+            return ConsumeConcurrentlyStatus.CONSUME_SUCCESS;
+        });
+
+        log.info("RocketMQ Increment Consumer started: group={}, topic={}, batchMaxSize={}",
+                incrConsumerGroup, incrTopic, batchMaxSize);
         return consumer;
     }
 }

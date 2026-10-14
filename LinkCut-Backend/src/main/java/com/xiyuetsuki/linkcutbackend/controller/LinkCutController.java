@@ -10,6 +10,7 @@ import com.xiyuetsuki.linkcutbackend.dto.ExpireExtendResponse;
 import com.xiyuetsuki.linkcutbackend.dto.LinkInfoResponse;
 import com.xiyuetsuki.linkcutbackend.dto.LinkStatsResponse;
 import com.xiyuetsuki.linkcutbackend.mq.producer.AccessLogProducer;
+import com.xiyuetsuki.linkcutbackend.mq.producer.IncrementProducer;
 import com.xiyuetsuki.linkcutbackend.service.LinkCutService;
 import com.github.benmanes.caffeine.cache.stats.CacheStats;
 import io.swagger.v3.oas.annotations.Operation;
@@ -38,13 +39,16 @@ public class LinkCutController {
 
     private final LinkCutService linkCutService;
     private final AccessLogProducer accessLogProducer;
+    private final IncrementProducer incrementProducer;
     private final LinkCacheManager linkCacheManager;
 
     public LinkCutController(LinkCutService linkCutService,
                              AccessLogProducer accessLogProducer,
+                             IncrementProducer incrementProducer,
                              LinkCacheManager linkCacheManager) {
         this.linkCutService = linkCutService;
         this.accessLogProducer = accessLogProducer;
+        this.incrementProducer = incrementProducer;
         this.linkCacheManager = linkCacheManager;
     }
 
@@ -82,6 +86,7 @@ public class LinkCutController {
         String userAgent = request.getHeader("User-Agent");
         String referer = request.getHeader("Referer");
         accessLogProducer.sendAccessLog(shortCode, clientIp, userAgent, referer);
+        incrementProducer.sendIncrement(shortCode);
         response.sendRedirect(originUrl);
     }
 

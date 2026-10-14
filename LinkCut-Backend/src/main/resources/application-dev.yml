@@ -12,3 +12,4 @@ logging:
   level:
     com.xiyuetsuki.linkcutbackend: DEBUG
     org.apache.rocketmq: WARN
+    linkcut.mq.trace: INFO

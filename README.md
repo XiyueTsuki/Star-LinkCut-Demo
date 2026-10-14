@@ -10,7 +10,8 @@
   - [请求流转全链路](#请求流转全链路)
   - [缓存策略全景](#缓存策略全景)
   - [限流体系](#限流体系)
-  - [消息可靠性保障](#消息可靠性保障)
+- [消息可靠性保障](#消息可靠性保障)
+- [消息轨迹](#消息轨迹)
 - [项目结构](#项目结构)
 - [数据库设计](#数据库设计)
 - [快速开始](#快速开始)
@@ -33,7 +34,8 @@ LinkCut 是一个高并发短链服务，采用 **Caffeine L1 本地缓存 + Red
 | 防雪崩 | `calculateTtl()` 对 Redis TTL 施加 ±30% 随机偏移 |
 | 多实例一致性 | Redis Pub/Sub 广播 `linkcut:cache:invalidate`，毫秒级 Caffeine 跨实例失效 |
 | 限流 | Guava RateLimiter 全局 + IP 两级限流；IP 级限流器用 Caffeine 存储防泄漏 |
-| 异步日志 | RocketMQ 5.3.0 原生客户端（零 Spring 依赖），异步发送 + 降级队列 + 死信队列 |
+| 异步日志 | RocketMQ 5.3.0 原生客户端（零 Spring 依赖），异步发送 + 三级降级链 + DLQ 自动清理 + 消息轨迹 |
+| 访问计数 | RocketMQ 异步增量 → Consumer 批量合并 `access_count + N`，一次 UPDATE 替代 N 次 |
 | 接口文档 | SpringDoc OpenAPI → `http://localhost:8080/docs.html` |
 | 联调环境 | MySQL 8.4 / Redis 8.2 / RocketMQ 5.3.0 全链路 Docker 部署 |
 
@@ -157,29 +159,93 @@ LinkCut 是一个高并发短链服务，采用 **Caffeine L1 本地缓存 + Red
 ### 消息可靠性保障
 
 ```
-访问日志发送 (Producer)
-    │
-    ├── 成功 ──→ RocketMQ Broker ──→ Consumer 批量 INSERT IGNORE ──→ MySQL
-    │
-    └── 失败 ──→ Redis 降级队列 (linkcut:mq:fallback:access_log)
-                     │
-                     ├── 定时任务重试 (30s 间隔, 最多 3 次)
-                     │       ├── 成功 → RocketMQ → MySQL
-                     │       └── 仍失败 → 重新入队(retries+1)
-                     │
-                     └── 超过最大重试 ──→ 死信队列 (linkcut:mq:dlq:access_log)
-                                               │
-                                               └── BacklogMonitor 监控告警
+┌─────────────────────────────────────────────────────────────────┐
+│                     访问日志发送 (AccessLogProducer)              │
+│                     增量计数发送 (IncrementProducer)              │
+└────────────────────────────┬────────────────────────────────────┘
+                             │
+                ┌────────────┼────────────┐
+                ▼                         ▼
+         RocketMQ Broker            发送失败 ──→ MessagePersistenceHelper
+         linkcut_access_log                        │
+         linkcut_access_incr        ┌──────────────┼──────────────┐
+                │                   ▼              ▼              ▼
+                ▼              L1: Redis       L2: 重试 3 次   L3: 本地文件
+    ┌───────────────────┐      直接写入        指数退避       logs/mq_fallback.log
+    │ Consumer 批量消费   │                    (500ms→1s→2s)
+    │ INSERT IGNORE      │                         │
+    │ access_count + N   │              仍失败 ──→ 本地文件兜底
+    └────────┬──────────┘                         │
+             │                            BacklogMonitor 60s 监控
+             └────────────── MySQL ────────────────┘
+
+┌─────────────────────────────────────────────────────────────────┐
+│                         定时任务 (BacklogMonitor)                  │
+│  checkBacklog()         60s  → 队列/DLQ 水位告警                   │
+│  cleanupDlq()            1h  → DLQ 双维度清理 (容量溢出+超时淘汰)    │
+│  checkLocalFallback()   60s  → 本地兜底文件大小监控                 │
+│  retryFailedMessages()  30s  → 降级队列重发 RocketMQ               │
+└─────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────┐
+│                       消息轨迹 (MessageTracer)                    │
+│  Producer 端: SEND_SUCCESS / SEND_FAIL / SERIALIZE_FAIL          │
+│  Consumer 端: RECEIVED (含端到端 delayMs) / HANDLE_BATCH /        │
+│              HANDLE_FAIL (入 DLQ)                                │
+│  独立 logger: linkcut.mq.trace → grep traceId 一行追全链路         │
+└─────────────────────────────────────────────────────────────────┘
 ```
 
 | 机制 | 说明 |
 |------|------|
 | 异步发送 | `SendCallback` 回调，不阻塞 `redirect` 主流程 |
 | 降级队列 | Redis `RQueue`，MQ 发送失败时写入，定时任务每 30s 重试 |
-| 死信队列 (DLQ) | Redis `RList`，超过 3 次重试失败后移入，需人工排查 |
+| 三级降级链 | `MessagePersistenceHelper`：L1 Redis → L2 3 次指数退避重试 → L3 本地文件 `logs/mq_fallback.log` |
+| 死信队列 (DLQ) | Redis `RList`，超过 3 次重试失败后移入，**支持自动清理**（容量溢出 FIFO 删头 + 超 72h 超时淘汰）|
+| 本地文件兜底 | Redis 不可用时写入本地文件，BacklogMonitor 60s 监控文件大小 |
 | 积压监控 | `BacklogMonitor` 每 60s 检查降级队列和 DLQ 水位，超阈值告警 |
+| DLQ 自动清理 | `cleanupDlq()` 每小时执行：容量超 `dlq-max-size` FIFO 删头 + 消息超 `dlq-retain-hours(72h)` 自动删除 |
 | 消息精简 | 降级队列水位超过 80% 时，自动丢弃 `userAgent`/`referer` 字段，仅保留核心数据 |
 | 幂等去重 | 每条消息带 `message_key` UUID，Consumer 使用 `INSERT IGNORE` 防止重复消费 |
+| 批量合并 | `IncrementConsumer` 按 shortCode 聚合同一批 +1 为 `access_count + N`，一次 UPDATE 替代 N 次 |
+| 全链路追踪 | `MessageTracer` 以 messageKey 为 traceId，Producer/Consumer 双向埋点，`grep traceId` 一行追全链路 |
+
+---
+
+### 消息轨迹
+
+`MessageTracer` 以 messageKey 为 traceId，在 Producer 发送和 Consumer 消费两端记录消息生命周期事件。输出至独立 logger `linkcut.mq.trace`，与业务日志隔离，可接入 ELK/Loki 生产级数据采集。
+
+#### 轨迹事件
+
+| 事件 | 端 | 级别 | 关键字段 | 触发时机 |
+|------|-----|------|---------|---------|
+| `SEND_SUCCESS` | Producer | INFO | traceId, msgId, costMs, shortCode | 异步发送 Broker ACK 成功 |
+| `SEND_FAIL` | Producer | WARN | traceId, error, costMs, shortCode | 异步发送 Broker ACK 失败（触发降级）|
+| `SERIALIZE_FAIL` | Producer | WARN | shortCode, error | 消息体 JSON 序列化失败 |
+| `RECEIVED` | Consumer | DEBUG | traceId, msgId, delayMs | 单条消息被拉取（delayMs = 当前时间 - bornTimestamp）|
+| `HANDLE_BATCH` | Consumer | INFO | totalMsgs, successCount, failCount, costMs | 整批处理完成 |
+| `HANDLE_FAIL` | Consumer | WARN | msgId, error | 单条解析/校验失败（已入 DLQ）|
+
+#### 轨迹示例
+
+一次短链跳转 `aB3xY9k` 产生的轨迹：
+
+```json
+{"timestamp":"2026-10-14T12:00:00.100Z","event":"SEND_SUCCESS","traceId":"a1b2c3d4-...","topic":"linkcut_access_log","msgId":"7F000001...","shortCode":"aB3xY9k","costMs":12}
+{"timestamp":"2026-10-14T12:00:00.150Z","event":"RECEIVED","traceId":"a1b2c3d4-...","msgId":"7F000001...","delayMs":38}
+{"timestamp":"2026-10-14T12:00:00.158Z","event":"HANDLE_BATCH","totalMsgs":8,"successCount":8,"failCount":0,"costMs":6}
+```
+
+排查方式：
+
+```bash
+# 追踪某条消息完整链路
+grep '"traceId":"a1b2c3d4"' app.log
+
+# 统计端到端延迟分布
+grep '"event":"RECEIVED"' app.log | grep -oP '"delayMs":\d+'
+```
 
 ---
 
@@ -224,11 +290,15 @@ Star-LinkCut-Demo/
 │   │   │   ├── ShortCodeGenerator.java       # 短码生成器接口
 │   │   │   └── SnowflakeShortCodeGenerator.java  # Snowflake 雪花算法实现
 │   │   ├── mq/
+│   │   │   ├── BacklogMonitor.java           # 消息积压监控 + DLQ 清理 + 本地文件监控
+│   │   │   ├── MessagePersistenceHelper.java # 三级降级持久化 (Redis→重试→本地文件)
+│   │   │   ├── MessageTracer.java            # 消息轨迹记录器 (6 种事件, 独立 logger)
 │   │   │   ├── consumer/
-│   │   │   │   └── AccessLogConsumer.java    # 批量消费 + INSERT IGNORE + DLQ
-│   │   │   ├── producer/
-│   │   │   │   └── AccessLogProducer.java    # 异步发送 + 降级队列 + 定时重试
-│   │   │   └── BacklogMonitor.java           # 消息积压监控（降级队列+DLQ）
+│   │   │   │   ├── AccessLogConsumer.java    # 访问日志批量消费 + INSERT IGNORE + DLQ
+│   │   │   │   └── IncrementConsumer.java    # 访问计数批量消费 (按 shortCode 合并 +N)
+│   │   │   └── producer/
+│   │   │       ├── AccessLogProducer.java    # 访问日志异步发送 + 降级队列 + 定时重试
+│   │   │       └── IncrementProducer.java    # 访问计数异步发送 (无降级, 丢失可重算)
 │   │   ├── repository/
 │   │   │   ├── AccessLogRepository.java      # 访问日志 Mapper（统计+批量写入）
 │   │   │   ├── ShortCodeSnapshotRepository.java  # 快照表 Mapper
@@ -322,7 +392,7 @@ docker ps
 # linkcut-rmq-dashboard        → 4003   (RocketMQ Dashboard)
 ```
 
-> 可访问 `http://<虚拟机IP>:4003` 打开 RocketMQ Dashboard 查看消息投递情况。
+> 可访问 `http://<虚拟机IP>:4003` 打开 RocketMQ Dashboard 查看消息投递情况，包含 `linkcut_access_log` 和 `linkcut_access_incr` 两个 Topic。
 
 ### 2. 配置后端连接
 
@@ -533,6 +603,11 @@ spring:
 | `linkcut.caffeine.max-size` | application.yml | `10000` | L1 缓存最大条目数 |
 | `linkcut.caffeine.expire-minutes` | application.yml | `5` | L1 缓存 TTL（分钟）|
 | `rocketmq.fallback.max-retries` | application.yml | `3` | 降级队列最大重试次数 |
+| `rocketmq.fallback.dlq-max-size` | application.yml | `5000` | DLQ 最大容量（超出 FIFO 删头）|
+| `rocketmq.fallback.dlq-retain-hours` | application.yml | `72` | DLQ 消息最长保留小时数 |
+| `rocketmq.fallback.dlq-cleanup-interval-ms` | application.yml | `3600000` | DLQ 清理间隔（1 小时）|
+| `rocketmq.fallback.dlq-write-retries` | application.yml | `3` | 三级降级链中 Redis 写入重试次数 |
+| `rocketmq.fallback.local-fallback-max-size-mb` | application.yml | `100` | 本地兜底文件告警阈值（MB）|
 
 ### 运维端口
 
